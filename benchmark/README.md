@@ -9,7 +9,9 @@ Two kinds of evidence matter here, and they need different instruments:
    set `QA_BENCH_LABELS` to control the page labels in the report).
 2. **Behavioral evidence** — do agents actually write better, more consistent
    tests? That requires an A/B experiment with humans grading output. The
-   protocol is below; run it with your team and add the findings here.
+   protocol is below. First real-world run (vs an existing hand-written
+   suite): **[AB-RESULTS.md](AB-RESULTS.md)** — 8/8 vs 7/10, zero
+   locator-caused failures, ~90% less context.
 
 ## What `npm run bench` measures
 
