@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Playwright storageState (holds a live session — never commit)
+.auth/
+*storage-state*.json

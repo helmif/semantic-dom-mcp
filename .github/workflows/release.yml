@@ -1,0 +1,27 @@
+name: Release
+
+# Publishes to npm when a v* tag is pushed. Requires the NPM_TOKEN repo
+# secret (Settings -> Secrets and variables -> Actions). Without it the
+# publish step fails loudly and nothing else is affected.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npx playwright install chromium --with-deps
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
