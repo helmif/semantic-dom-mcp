@@ -100,7 +100,10 @@ tool result — the agent can react instead of crashing.
   in that order). **Cross-origin iframes** are recorded as opaque `cross_origin_frame` nodes with
   URL/name only — their DOM is never touched.
 - **Notification & dialog surfaces** (`role="alert"`, `role="status"`, dialogs) are extracted like
-  interactive nodes. Since those ARIA roles take names from the author (not contents), their role
+  interactive nodes. When a toast library keeps the live region empty and renders the message in a
+  sibling (a common pattern across UI libraries), the message text is pulled from the enclosing
+  container and flagged. For UI that renders late after an interaction, `wait_selector_after` on
+  `extract_semantic_dom_after` waits deterministically instead of guessing `settle_ms`. Since those ARIA roles take names from the author (not contents), their role
   locator is `getByRole('alert')` — or with the `aria-label` name when one exists. For UI that only
   appears **after** an interaction (login-success toast), use `extract_semantic_dom_after`.
 - **Links carry `href`** (schema 1.1) so agents can discover which page to extract next without

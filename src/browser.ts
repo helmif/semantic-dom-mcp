@@ -441,6 +441,10 @@ export type PageAction =
 export interface ExtractAfterActionsInput extends ExtractInput {
   actions: PageAction[];
   settle_ms: number;
+  /** Wait for this selector to be visible AFTER the actions, before the
+   * snapshot — deterministic alternative to guessing settle_ms for
+   * late-rendering toasts/modals. */
+  wait_selector_after?: string | undefined;
 }
 
 const ACTION_TIMEOUT_MS = 10_000;
@@ -503,6 +507,20 @@ export async function extractAfterActions(input: ExtractAfterActionsInput): Prom
     await navigateForExtraction(page, input);
     for (let i = 0; i < input.actions.length; i++) {
       await performAction(page, input.actions[i]!, i);
+    }
+    if (input.wait_selector_after) {
+      try {
+        await page.waitForSelector(input.wait_selector_after, {
+          state: "visible",
+          timeout: WAIT_SELECTOR_TIMEOUT_MS,
+        });
+      } catch {
+        throw new ExtractError(
+          "wait_selector_after_timeout",
+          `wait_selector_after '${input.wait_selector_after}' did not become visible within ${WAIT_SELECTOR_TIMEOUT_MS / 1000}s after the actions.`,
+          "Verify the selector and that the declared actions actually trigger that UI; or extract without it to inspect the resulting state.",
+        );
+      }
     }
     if (input.settle_ms > 0) await page.waitForTimeout(input.settle_ms);
     const postDenial = checkUrlAllowed(page.url());

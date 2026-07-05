@@ -75,6 +75,12 @@ const extractAfterInputSchema = extractInputSchema
       .max(10_000)
       .default(500)
       .describe("Wait after the last action before snapshotting (for toasts/animations)."),
+    wait_selector_after: z
+      .string()
+      .optional()
+      .describe(
+        "Selector to await (visible) AFTER the actions, before snapshotting — deterministic wait for late-rendering toasts/modals instead of guessing settle_ms.",
+      ),
   })
   .strict();
 
@@ -114,7 +120,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.3.0" },
+    { name: "semantic-dom-mcp", version: "0.3.1" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 

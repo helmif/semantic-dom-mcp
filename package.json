@@ -1,6 +1,6 @@
 {
   "name": "semantic-dom-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local MCP server (stdio) that extracts a live page's DOM into compact Semantic JSON with Playwright-native locators, for consistent AI-generated Playwright tests.",
   "type": "module",
   "main": "dist/index.js",

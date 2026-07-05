@@ -60,6 +60,19 @@ Caveats to resolve before shipping (they are semantic, not cosmetic):
 - Release workflow: pushing a `v*` tag publishes to npm (needs the
   `NPM_TOKEN` repo secret).
 
+## Shipped in v0.3.1 (2026-07-05)
+
+Three library-agnostic fixes from a real-world comparison against an existing
+hand-written Playwright suite:
+
+- Empty `role=alert`/`status` live regions get `text_content` from their
+  enclosing container (flagged) — toast messages become assertable.
+- Descendant `img[alt]` is used as the text equivalent for image-only
+  elements — logo links get `getByRole('link', { name: ... })` instead of
+  structural CSS.
+- `wait_selector_after` on `extract_semantic_dom_after` — deterministic
+  post-action wait for late-rendering modals/toasts.
+
 ## Later
 - **MCP SDK v2 migration** once it's stable (expected on/after 2026-07-28)
   and v1 approaches end of fixes — isolated to `src/server.ts` registration

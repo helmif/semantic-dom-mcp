@@ -184,7 +184,15 @@ export function __qaAccessibleName(el: Element): string | null {
   }
   if (tag === "select" || tag === "textarea") return null;
   var text = __qaTextContent(el);
-  return text || null;
+  if (text) return text;
+  // Image-only elements (logo links, icon buttons): the image alt is the
+  // text equivalent — without it these fall to brittle structural CSS.
+  var img = el.querySelector ? el.querySelector("img[alt]") : null;
+  if (img) {
+    var imgAlt = __qaCollapse(img.getAttribute("alt"));
+    if (imgAlt) return imgAlt;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -478,6 +486,26 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean):
     properties: __qaProperties(el, visible),
   };
   if (cand.note) node.context_note = cand.note;
+  // Notification libraries (Ant Design and friends) often keep the
+  // role=alert/status live region EMPTY and render the message in a sibling.
+  // Pull the text from the nearest non-empty enclosing container so tests
+  // can assert the message, and say where it came from.
+  if ((role === "alert" || role === "status") && !node.properties.text_content) {
+    var anc = el.parentElement;
+    var hops = 0;
+    while (anc && anc !== document.body && hops < 3) {
+      var ancText = __qaCollapse(anc.textContent);
+      if (ancText) {
+        node.properties.text_content = ancText.length > 120 ? ancText.slice(0, 120) : ancText;
+        node.context_note =
+          (node.context_note ? node.context_note + " " : "") +
+          "Live region element is empty; text_content was taken from its enclosing container.";
+        break;
+      }
+      anc = anc.parentElement;
+      hops++;
+    }
+  }
   return node;
 }
 

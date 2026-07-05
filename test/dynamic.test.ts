@@ -66,6 +66,37 @@ describe("notification/dialog surfaces", () => {
 
 /* ------------------------------------------------------------------ */
 
+describe("notification-library patterns (v0.3.1, library-agnostic)", () => {
+  it("pulls live-region text from the enclosing container when the region itself is empty", async () => {
+    // Pattern used by antd, react-toastify, MUI: empty aria-live element,
+    // message rendered in a sibling. No library-specific markup here.
+    fx.route(
+      "/toast-lib",
+      htmlPage(`
+        <div class="notice-wrapper">
+          <div role="alert"></div>
+          <div class="notice-message">Email atau kata sandi salah</div>
+        </div>`),
+    );
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/toast-lib`)));
+    const alert = extract.interactive_nodes.find((n) => n.role === "alert")!;
+    expect(alert.properties.text_content).toBe("Email atau kata sandi salah");
+    expect(alert.context_note).toMatch(/enclosing container/);
+  });
+
+  it("uses descendant img alt as the text equivalent for image-only links", async () => {
+    fx.route("/logo-link", htmlPage(`<a href="/"><img alt="shop logo" src="x.png"></a>`));
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/logo-link`)));
+    const logo = extract.interactive_nodes.find((n) => n.tag === "a")!;
+    expect(logo.accessible_name).toBe("shop logo");
+    expect(logo.primary_locator).toMatchObject({
+      strategy: "role",
+      playwright: "getByRole('link', { name: 'shop logo' })",
+      is_unique: true,
+    });
+  });
+});
+
 describe("extract_semantic_dom_after (declared actions)", () => {
   const toastPage = htmlPage(`
     <form id="login">
@@ -106,6 +137,49 @@ describe("extract_semantic_dom_after (declared actions)", () => {
       is_unique: true,
     });
     expect(after.page_metadata.notes.join(" ")).toMatch(/AFTER 2 declared action/);
+  });
+
+  it("wait_selector_after captures late-rendering UI deterministically", async () => {
+    // Modal appears 1.5s after the click — like real-world lazy welcome modals.
+    fx.route(
+      "/late-modal",
+      htmlPage(`
+        <button id="go">Open</button>
+        <script>
+          document.getElementById("go").addEventListener("click", () => {
+            setTimeout(() => {
+              const d = document.createElement("div");
+              d.setAttribute("role", "dialog");
+              d.setAttribute("aria-label", "Welcome");
+              d.innerHTML = '<button data-testid="welcome-confirm">Mulai</button>';
+              document.body.appendChild(d);
+            }, 1500);
+          });
+        </script>`),
+    );
+    // without the post-action wait, a short settle misses it entirely
+    const blind = assertValidExtract(
+      await extractAfterActions(
+        afterInput(`${fx.base}/late-modal`, [{ type: "click", locator: { strategy: "id", value: "go" } }], {
+          settle_ms: 200,
+        }),
+      ),
+    );
+    expect(blind.interactive_nodes.some((n) => n.role === "dialog")).toBe(false);
+
+    const seen = assertValidExtract(
+      await extractAfterActions(
+        afterInput(`${fx.base}/late-modal`, [{ type: "click", locator: { strategy: "id", value: "go" } }], {
+          settle_ms: 0,
+          wait_selector_after: '[data-testid="welcome-confirm"]',
+        }),
+      ),
+    );
+    const dialog = seen.interactive_nodes.find((n) => n.role === "dialog")!;
+    expect(dialog.accessible_name).toBe("Welcome");
+    expect(
+      seen.interactive_nodes.some((n) => n.primary_locator.playwright === "getByTestId('welcome-confirm')"),
+    ).toBe(true);
   });
 
   it("refuses to extract when the actions navigate off the allowlist", async () => {
