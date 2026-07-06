@@ -5,16 +5,16 @@ what the tool is; this says how to get it working with *your* agent.
 
 ## 1. One-time setup
 
+The server is published on npm — no clone or build needed. The only one-time
+step is installing the Chromium build that matches the package's bundled
+Playwright:
+
 ```bash
-git clone git@github.com:helmif/semantic-dom-mcp.git
-cd semantic-dom-mcp
-npm install
-npx playwright install chromium
-npm run build
+npx -y -p semantic-dom-mcp playwright install chromium
 ```
 
-Sanity check: `npm test` should end with all tests passing (it launches a real
-headless Chromium against local fixture pages).
+(Contributors who want to work on the server itself: clone the repo and see
+the Development section of the README.)
 
 ## 2. Decide your environment values
 
@@ -27,14 +27,13 @@ headless Chromium against local fixture pages).
 ## 3. Connect your agent
 
 All clients speak the same stdio config; only the file location differs.
-`<ABS>` below = the absolute path to your clone (e.g. `D:/Ngoding/semantic-dom-mcp`).
 
 **Claude Code (CLI / VS Code)** — from your test project's directory:
 
 ```bash
 claude mcp add semantic-dom --scope project \
   --env QA_MCP_ALLOWED_HOSTS=staging.yourapp.internal \
-  -- node <ABS>/dist/index.js
+  -- npx -y semantic-dom-mcp
 ```
 
 or commit a `.mcp.json` in the test repo so the whole team gets it:
@@ -43,13 +42,16 @@ or commit a `.mcp.json` in the test repo so the whole team gets it:
 {
   "mcpServers": {
     "semantic-dom": {
-      "command": "node",
-      "args": ["<ABS>/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "semantic-dom-mcp"],
       "env": { "QA_MCP_ALLOWED_HOSTS": "staging.yourapp.internal" }
     }
   }
 }
 ```
+
+Pin a version (`"semantic-dom-mcp@0.3.1"`) if you want the whole team on
+identical extractions until you choose to upgrade.
 
 **Claude Desktop** — same `mcpServers` block in
 `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
@@ -115,7 +117,7 @@ repo too, and regenerate when the session expires.
 | `url_not_allowed` | Host missing from `QA_MCP_ALLOWED_HOSTS` in the *client's* env block (each client passes its own env). |
 | `0 nodes` on a page that clearly has content | SPA rendered after the wait point. Use the default `wait_for: "networkidle"`, or `wait_selector` for a key element. (We hit exactly this on a production React SPA with `wait_for: "load"`.) |
 | `navigation_failed` timeout with `networkidle` | Page never goes network-quiet (analytics/polling). Use `wait_for: "load"` + `wait_selector`. |
-| `Executable doesn't exist` | Run `npx playwright install chromium` in the server's clone. |
+| `Executable doesn't exist` | The version-matched browser is missing — run `npx -y -p semantic-dom-mcp playwright install chromium`. |
 | `storage_state_missing` | `QA_MCP_STORAGE_STATE` points at a file that isn't there — regenerate it (§5). |
 | Extraction returns a login page instead of the requested page | Session expired. Run the `check_auth` tool to confirm (`looks_logged_out: true`), then regenerate the storageState (§5). |
 | Locator in generated test not in the extraction | The agent ignored the rules — reject the PR; that is exactly what review is for. |

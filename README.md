@@ -12,24 +12,23 @@ Same page → same extraction → same conventions → same test style, regardle
 uniqueness-verified by Playwright's engine and byte-identical output across runs.
 **Docs:** [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [Roadmap](docs/ROADMAP.md)
 
-## Quickstart (5 lines)
+## Quickstart
+
+No clone, no build — the package is on npm. One-time browser setup (installs the
+Chromium build matching the package's bundled Playwright):
 
 ```bash
-npm install
-npx playwright install chromium
-npm run build
-export QA_MCP_ALLOWED_HOSTS="staging.yourapp.internal"   # PowerShell: $env:QA_MCP_ALLOWED_HOSTS="..."
-node ./dist/index.js    # or add the server to your MCP client (below) and let it launch this
+npx -y -p semantic-dom-mcp playwright install chromium
 ```
 
-## Claude Code / client connection
+Then add the server to your MCP client:
 
 ```json
 {
   "mcpServers": {
     "semantic-dom": {
-      "command": "node",
-      "args": ["./semantic-dom-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "semantic-dom-mcp"],
       "env": {
         "QA_MCP_ALLOWED_HOSTS": "staging.yourapp.internal,staging.admin.internal",
         "QA_MCP_STORAGE_STATE": "./.auth/staging.json"
@@ -39,8 +38,10 @@ node ./dist/index.js    # or add the server to your MCP client (below) and let i
 }
 ```
 
-During development, `"command": "npx", "args": ["tsx", "./semantic-dom-mcp/src/index.ts"]` may
-replace the built path.
+That's the whole setup. Verify by asking your agent to list its MCP tools — you should
+see `extract_semantic_dom`. See [docs/GUIDE.md](docs/GUIDE.md) for per-client config
+locations (Claude Code, Claude Desktop, Cursor, Windsurf), authenticated staging, and
+troubleshooting. To run from a clone instead (contributors), see Development below.
 
 ## Workflow
 
@@ -117,9 +118,13 @@ tool result — the agent can react instead of crashing.
 ## Development
 
 ```bash
+git clone https://github.com/helmif/semantic-dom-mcp.git && cd semantic-dom-mcp
+npm install
+npx playwright install chromium
 npm run dev        # run the server over stdio via tsx
 npm run typecheck  # tsc --noEmit (strict)
 npm test           # Vitest suites against real fixture pages in headless Chromium
+npm run build      # compile to dist/ (clients can then use "command": "node", "args": ["<path>/dist/index.js"])
 ```
 
 Repo layout: `src/index.ts` (bootstrap) · `src/server.ts` (MCP surface) · `src/browser.ts`
