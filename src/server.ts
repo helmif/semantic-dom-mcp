@@ -120,7 +120,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.3.1" },
+    { name: "semantic-dom-mcp", version: "0.3.2" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
