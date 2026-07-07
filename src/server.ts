@@ -35,6 +35,13 @@ const extractInputSchema = z
       .enum(["desktop", "mobile"])
       .default("desktop")
       .describe("Viewport preset — 'mobile' is 375x812 with touch, for responsive states."),
+    include_click_targets: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Opt-in heuristic: also include cursor:pointer elements with content that match no other rule " +
+          "(JS-click product cards without anchors/roles/test-ids). Heuristic nodes carry a context_note.",
+      ),
   })
   .strict();
 
@@ -120,7 +127,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.3.2" },
+    { name: "semantic-dom-mcp", version: "0.4.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -151,7 +158,8 @@ export function createServer(): McpServer {
         "(fill/click/press/wait) in the main frame, then returns Semantic JSON of the RESULTING state. " +
         "Use it for post-interaction UI a plain snapshot cannot see: success/error toasts, validation " +
         "messages, opened dialogs. Derive action locators from a prior extract_semantic_dom call. " +
-        "The page must remain on allowlisted hosts after the actions, or nothing is extracted.",
+        "The page must remain on allowlisted hosts after the actions, or nothing is extracted. " +
+        "Uniqueness reflects capture time — accumulating UI (chat threads, lists) can multiply matches later.",
       inputSchema: extractAfterInputSchema,
     },
     async (args) => {

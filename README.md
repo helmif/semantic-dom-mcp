@@ -107,6 +107,9 @@ tool result — the agent can react instead of crashing.
   `extract_semantic_dom_after` waits deterministically instead of guessing `settle_ms`. Since those ARIA roles take names from the author (not contents), their role
   locator is `getByRole('alert')` — or with the `aria-label` name when one exists. For UI that only
   appears **after** an interaction (login-success toast), use `extract_semantic_dom_after`.
+- **JS-click cards** (product tiles with no anchor/role/test-id) are invisible to the factual
+  rules by design — pass `include_click_targets: true` to include cursor-pointer boundary
+  elements with content, flagged as heuristic and located by their heading text.
 - **Links carry `href`** (schema 1.1) so agents can discover which page to extract next without
   scraping. **Framework-generated ids** (`rc_select_*`, React `useId`, Radix, MUI...) are detected
   and demoted to last-resort with a note — they change between builds and must never be primary.

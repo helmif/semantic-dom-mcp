@@ -72,6 +72,9 @@ export interface RawExtractResult {
 export interface InPageOptions {
   maxNodes: number;
   maxDepth: number;
+  /** Opt-in heuristic: include cursor:pointer boundary elements with content
+   * (JS-click cards) that match no other inclusion rule. */
+  includeClickTargets?: boolean;
 }
 
 /** Inherited ancestor visibility flags carried down the traversal stack. */
@@ -301,6 +304,7 @@ export function __qaShouldInclude(el: Element, role: string | null): boolean {
 export function __qaVisibility(el: Element, anc: AncestorFlags): {
   visible: boolean;
   self: AncestorFlags;
+  pointer: boolean;
 } {
   var cs = window.getComputedStyle(el);
   var self: AncestorFlags = {
@@ -320,7 +324,25 @@ export function __qaVisibility(el: Element, anc: AncestorFlags): {
     var t = el.tagName.toLowerCase();
     if (t !== "body" && t !== "html") hidden = true;
   }
-  return { visible: !hidden, self: self };
+  return { visible: !hidden, self: self, pointer: cs.cursor === "pointer" };
+}
+
+/**
+ * For click-target heuristic nodes: a short heading inside the element (a
+ * product-card title, typically) makes a usable getByText candidate. Returns
+ * null when there is no heading or it is too long to be a stable text match.
+ */
+export function __qaClickTargetHeading(el: Element): string | null {
+  var h = el.querySelector ? el.querySelector("h1,h2,h3,h4,h5,h6") : null;
+  if (!h) return null;
+  var t = __qaCollapse(h.textContent);
+  return t && t.length <= 80 ? t : null;
+}
+
+/** Click targets must carry content — empty pointer divs are decoration. */
+export function __qaHasContent(el: Element): boolean {
+  if (__qaCollapse(el.textContent)) return true;
+  return !!(el.querySelector && el.querySelector("img"));
 }
 
 export function __qaProperties(el: Element, visible: boolean): RawNodeProperties {
@@ -468,11 +490,18 @@ export function __qaScopeHint(el: Element): string | null {
 /* Node builder                                                         */
 /* ------------------------------------------------------------------ */
 
-export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean): RawNode {
+export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, clickTarget?: boolean): RawNode {
   var role = __qaRole(el);
   var accessibleName = __qaAccessibleName(el);
   var cssPath = inShadow ? "" : __qaCssPath(el);
   var cand = __qaCandidates(el, role, accessibleName, inShadow, cssPath);
+  if (clickTarget) {
+    var heading = __qaClickTargetHeading(el);
+    if (heading) cand.candidates.unshift({ strategy: "text", value: heading });
+    cand.note =
+      (cand.note ? cand.note + " " : "") +
+      "Included via the opt-in cursor:pointer click-target heuristic; the element has no native interactive semantics (consider adding a role or data-testid).";
+  }
   var node: RawNode = {
     kind: "element",
     tag: el.tagName.toLowerCase(),
@@ -529,9 +558,9 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
     noscript: true, head: true, iframe: true, frame: true,
   };
 
-  interface StackEntry { el: Element; depth: number; inShadow: boolean; anc: AncestorFlags }
+  interface StackEntry { el: Element; depth: number; inShadow: boolean; anc: AncestorFlags; ptr: boolean }
   var rootAnc: AncestorFlags = { displayNone: false, opacityZero: false, hiddenAttr: false, ariaHidden: false };
-  var stack: StackEntry[] = [{ el: document.documentElement, depth: 0, inShadow: false, anc: rootAnc }];
+  var stack: StackEntry[] = [{ el: document.documentElement, depth: 0, inShadow: false, anc: rootAnc, ptr: false }];
 
   while (stack.length > 0) {
     var entry = stack.pop()!;
@@ -568,26 +597,34 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
     }
 
     var role = __qaRole(el);
-    if (__qaShouldInclude(el, role)) {
+    var included = __qaShouldInclude(el, role);
+    // Opt-in click-target heuristic (spec amendment, v0.4): a cursor:pointer
+    // BOUNDARY (parent chain not pointer) with content is very likely a
+    // JS-click card that carries no anchor/role/test-id. Boundary detection
+    // matters because cursor is inherited by every descendant.
+    var clickTarget =
+      !included && !!opts.includeClickTargets && vis.pointer && !entry.ptr && __qaHasContent(el);
+    if (included || clickTarget) {
       if (nodes.length >= opts.maxNodes) {
         truncated = true;
         notes.push("MAX_NODES (" + opts.maxNodes + ") hit; traversal stopped early.");
         break;
       }
-      nodes.push(__qaBuildNode(el, entry.inShadow, vis.visible));
+      nodes.push(__qaBuildNode(el, entry.inShadow, vis.visible, clickTarget));
     }
 
     // Descend: open shadow root first (flagged in_shadow), then light children.
     var i: number;
+    var childPtr = entry.ptr || vis.pointer;
     if (el.shadowRoot) {
       var sc = el.shadowRoot.children;
       for (i = sc.length - 1; i >= 0; i--) {
-        stack.push({ el: sc[i]!, depth: entry.depth + 1, inShadow: true, anc: vis.self });
+        stack.push({ el: sc[i]!, depth: entry.depth + 1, inShadow: true, anc: vis.self, ptr: childPtr });
       }
     }
     var kids = el.children;
     for (i = kids.length - 1; i >= 0; i--) {
-      stack.push({ el: kids[i]!, depth: entry.depth + 1, inShadow: entry.inShadow, anc: vis.self });
+      stack.push({ el: kids[i]!, depth: entry.depth + 1, inShadow: entry.inShadow, anc: vis.self, ptr: childPtr });
     }
   }
 

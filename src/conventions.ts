@@ -23,6 +23,10 @@ export const TEAM_CONVENTIONS = `TEAM CONVENTIONS (non-negotiable):
 - State changes: this JSON is a SINGLE snapshot. If an element is disabled
   now (e.g. a submit button), write the interactions that make it valid; do
   not assume it stays disabled.
+- Uniqueness is verified AT CAPTURE TIME. For UI that accumulates entries
+  (chat threads, notification lists, growing tables), scope with .first() or
+  .filter() and make asserted content unique per run; never assert bare
+  visibility on a locator that content growth can multiply.
 - Do NOT invent selectors, ids, roles, or text not present in the data. If a
   required element for the scenario is missing, STOP and say what's missing.`;
 

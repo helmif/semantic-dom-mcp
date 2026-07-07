@@ -73,6 +73,18 @@ hand-written Playwright suite:
 - `wait_selector_after` on `extract_semantic_dom_after` — deterministic
   post-action wait for late-rendering modals/toasts.
 
+## Shipped in v0.4 (2026-07-07)
+
+From the chat-flow A/B against a hand-written suite:
+
+- **Opt-in click-target heuristic** (`include_click_targets`): JS-click cards
+  (cursor:pointer boundaries with content, no anchor/role/test-id) are
+  included with heading-text locators and a heuristic context_note — closes
+  the "product cards are invisible" gap seen on two real listings.
+- **Capture-time uniqueness rule** added to the team conventions and the
+  after-tool description: accumulating UI (chat threads, lists) can multiply
+  matches after capture — scope with .first()/.filter().
+
 ## Later
 - **MCP SDK v2 migration** once it's stable (expected on/after 2026-07-28)
   and v1 approaches end of fixes — isolated to `src/server.ts` registration

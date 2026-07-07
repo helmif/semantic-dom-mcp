@@ -223,6 +223,9 @@ export interface ExtractInput {
   include_hidden: boolean;
   max_nodes: number;
   viewport?: ViewportPreset | undefined;
+  /** Opt-in heuristic: include cursor:pointer boundary elements with content
+   * (JS-click cards) that match no other inclusion rule. Default false. */
+  include_click_targets?: boolean | undefined;
 }
 
 async function withPage<T>(fn: (page: Page) => Promise<T>, viewport?: ViewportPreset): Promise<T> {
@@ -311,7 +314,7 @@ async function navigateForExtraction(
 /** Snapshots the page's CURRENT state into a SemanticExtract. */
 async function snapshotPage(
   page: Page,
-  input: Pick<ExtractInput, "include_hidden" | "max_nodes">,
+  input: Pick<ExtractInput, "include_hidden" | "max_nodes" | "include_click_targets">,
   extraNotes: string[] = [],
 ): Promise<SemanticExtract> {
     const frames = await enumerateFrames(page);
@@ -335,7 +338,11 @@ async function snapshotPage(
       let raw: RawExtractResult;
       try {
         raw = (await entry.frame.evaluate(
-          buildEvaluateExpression({ maxNodes: budget, maxDepth: MAX_DEPTH }),
+          buildEvaluateExpression({
+            maxNodes: budget,
+            maxDepth: MAX_DEPTH,
+            includeClickTargets: input.include_click_targets === true,
+          }),
         )) as RawExtractResult;
       } catch (err) {
         notes.push(

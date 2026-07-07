@@ -110,6 +110,35 @@ describe("locator quality (v0.3)", () => {
   });
 });
 
+describe("click-target heuristic (v0.4, opt-in)", () => {
+  const cardsPage = htmlPage(`
+    <div class="card" style="cursor:pointer"><h3>Sepatu Uji Coba</h3><p>Rp100.000 · Terjual 5 · deskripsi panjang produk</p></div>
+    <div class="card" style="cursor:pointer"><h3>Tas Uji Coba</h3><p>Rp50.000</p></div>
+    <div style="cursor:pointer"></div>
+    <button>Beli</button>`);
+
+  it("is OFF by default — JS-click cards stay excluded", async () => {
+    fx.route("/cards", cardsPage);
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/cards`)));
+    expect(extract.interactive_nodes.filter((n) => n.tag === "div")).toHaveLength(0);
+    expect(extract.interactive_nodes.some((n) => n.tag === "button")).toBe(true);
+  });
+
+  it("includes pointer-boundary cards with heading-text locators when opted in", async () => {
+    fx.route("/cards", cardsPage);
+    const extract = assertValidExtract(
+      await extractSemanticDom(input(`${fx.base}/cards`, { include_click_targets: true })),
+    );
+    const cards = extract.interactive_nodes.filter((n) => n.tag === "div");
+    expect(cards).toHaveLength(2); // empty pointer div excluded, children not duplicated
+    const shoe = cards.find((n) => n.primary_locator.playwright === "getByText('Sepatu Uji Coba')")!;
+    expect(shoe.primary_locator.is_unique).toBe(true);
+    expect(shoe.context_note).toMatch(/click-target heuristic/);
+    // the button is included by the normal rules exactly once, not re-added
+    expect(extract.interactive_nodes.filter((n) => n.tag === "button")).toHaveLength(1);
+  });
+});
+
 describe("viewport preset (v0.3)", () => {
   it("mobile viewport changes visibility of responsive elements", async () => {
     fx.route(
