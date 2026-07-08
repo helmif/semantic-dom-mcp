@@ -10,7 +10,7 @@ Same page → same extraction → same conventions → same test style, regardle
 **Evidence:** [benchmark/RESULTS.md](benchmark/RESULTS.md) — on real pages the Semantic JSON is
 **92–97% smaller** than the raw DOM an agent would otherwise consume, with every locator
 uniqueness-verified by Playwright's engine and byte-identical output across runs.
-**Docs:** [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [Roadmap](docs/ROADMAP.md)
+**Docs:** [How it works (deep dive)](docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [Roadmap](docs/ROADMAP.md)
 
 ## Quickstart
 
