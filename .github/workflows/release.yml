@@ -1,11 +1,15 @@
 name: Release
 
-# Publishes to npm when a v* tag is pushed. Requires the NPM_TOKEN repo
-# secret (Settings -> Secrets and variables -> Actions). Without it the
-# publish step fails loudly and nothing else is affected.
+# Publishes to npm and creates a GitHub Release when a v* tag is pushed.
+# Requires the NPM_TOKEN repo secret (Settings -> Secrets and variables ->
+# Actions). The tag must match package.json and have a CHANGELOG.md section;
+# otherwise the run fails before anything is published.
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write
 
 jobs:
   publish:
@@ -17,6 +21,16 @@ jobs:
           node-version: 20
           cache: npm
           registry-url: https://registry.npmjs.org
+      - name: Check tag, package version and changelog agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json version $pkg" >&2
+            exit 1
+          fi
+          sh scripts/changelog-section.sh "$tag" > release-notes.md
+          echo "Release notes for $tag:" && cat release-notes.md
       - run: npm ci
       - run: npx playwright install chromium --with-deps
       - run: npm run typecheck
@@ -25,3 +39,11 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release from the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag

@@ -12,7 +12,7 @@ Same page → same extraction → same conventions → same test style, regardle
 **92–97% smaller** than the raw DOM an agent would otherwise consume, every locator is
 uniqueness-verified by Playwright's engine, and output is byte-identical across runs. A session
 diff is a further **~90% smaller** than re-extracting the page after a step.
-**Docs:** [How it works (deep dive)](docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [v0.5 flow validation](benchmark/FLOW-VALIDATION.md) · [Roadmap](docs/ROADMAP.md)
+**Docs:** [How it works (deep dive)](docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [v0.5 flow validation](benchmark/FLOW-VALIDATION.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 ## Quickstart
 
