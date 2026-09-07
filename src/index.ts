@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { closeBrowser } from "./browser.js";
+import { closeAllSessions } from "./session.js";
 import { createServer } from "./server.js";
 
 async function shutdown(code: number): Promise<never> {
+  await closeAllSessions().catch(() => undefined);
   await closeBrowser().catch(() => undefined);
   process.exit(code);
 }

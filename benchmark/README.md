@@ -11,7 +11,10 @@ Two kinds of evidence matter here, and they need different instruments:
    tests? That requires an A/B experiment with humans grading output. The
    protocol is below. First real-world run (vs an existing hand-written
    suite): **[AB-RESULTS.md](AB-RESULTS.md)** — 8/8 vs 7/10, zero
-   locator-caused failures, ~90% less context.
+   locator-caused failures, ~90% less context. v0.5 pre-release flow check
+   on a fixture app (sessions + diffs + observed behavior, generated tests
+   run green, four tool bugs found and fixed):
+   **[FLOW-VALIDATION.md](FLOW-VALIDATION.md)**.
 
 ## What `npm run bench` measures
 

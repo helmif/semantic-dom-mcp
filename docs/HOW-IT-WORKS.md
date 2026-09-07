@@ -135,14 +135,18 @@ thirty descendants) that carry content are included as heuristic nodes, each sta
 `context_note` saying so. That's the pattern JS-router product cards use: clickable, yet carrying
 no anchor, role, or test-id.
 
-### 5.3 Visibility — seven rules, resolved cheaply
+### 5.3 Visibility: Playwright's rule, resolved cheaply
 
-`is_visible` is false if any of: `display:none` (self or ancestor), `visibility:hidden/collapse`,
-`opacity:0` (self or ancestor), `hidden` attribute or `aria-hidden="true"` (self or ancestor),
-a zero-size bounding box, or a null `offsetParent` while not `position:fixed`. Ancestor-dependent
-rules would cost O(depth) per element if checked naively; instead the traversal **carries
-inherited flags down the stack**, so each element is examined once. Hidden elements are still
-*included* — tests assert hidden-ness all the time — just flagged.
+`is_visible` exists to predict `expect(locator).toBeVisible()`, so it follows Playwright's own
+definition and nothing else: false if `display:none` (self or ancestor), `visibility:hidden` or
+`collapse`, or a bounding box whose width **or** height is zero (`display:contents` delegates to
+its children). Opacity, `aria-hidden` and `offsetParent` do not count for Playwright and
+therefore not here either. Earlier versions treated `opacity:0` and `aria-hidden` as hidden and a
+box as hidden only when both dimensions were zero; v0.5 aligned the rule after a generated test
+asserted `toBeVisible()` on an empty live region the extractor had called visible. The
+`display:none` ancestor flag is **carried down the traversal stack** so each element is examined
+once. Hidden elements are still *included*, since tests assert hidden-ness all the time, just
+flagged.
 
 ### 5.4 Accessible name — what Playwright will call this element
 
@@ -195,7 +199,7 @@ agents to scope accumulating UI with `.first()`/`.filter()` for exactly this rea
 Everything lands in one `SemanticExtract` JSON: `page_metadata` (title, final URL, timestamp,
 node and frame counts, `truncated`, and human-readable `notes` carrying every warning the
 pipeline generated) plus `interactive_nodes`. Properties that don't apply are `null`, never
-omitted — a stable shape downstream. The schema is versioned (`1.1`) and frozen: additive changes
+omitted — a stable shape downstream. The schema is versioned (`1.2`) and frozen: additive changes
 bump the minor, breaking changes would bump the major, and agents can rely on the shape.
 
 Output size in practice: 92–97% smaller than the raw DOM of the same page, and byte-identical
@@ -213,6 +217,65 @@ values are never logged or echoed into errors (they may be credentials), each ac
 timeout, and after the actions run the page's host is re-checked against the allowlist: if the
 actions navigated somewhere non-allowlisted, nothing is extracted. For late-rendering UI,
 `wait_selector_after` waits for a specific element instead of guessing a settle delay.
+
+## 8b. Flows: sessions, observed behavior, and diffs (v0.5)
+
+The single-shot tools answer "what is on this page". A scenario is a sequence of pages and
+states, and three things a test needs live *between* snapshots: where the page navigated, which
+requests it made, and what changed. v0.5 adds a session layer for exactly that.
+
+**Sessions.** `session_open` creates a fresh browser context (storageState applied) and one page
+that stays open across tool calls. `session_act` runs a declared action list on it (the same
+bounded types as the after-tool, plus `select` and an allowlisted `goto`); `session_extract` runs
+the same in-page engine and locator resolution as Stage 5 and 6 on the page's current state;
+`session_close` releases the context and is idempotent. Guardrails are the single-shot ones plus
+session-specific limits: the allowlist is checked before any action runs, after every single
+action, after a failed action, and before every snapshot, and a session found off-allowlist at any
+of those points is closed rather than acted on or extracted; sessions expire after an idle TTL,
+are capped in number (the slot is reserved before any asynchronous work, so concurrent opens
+cannot exceed the cap), accept one in-flight call at a time, and keep at most five snapshots in
+memory. Nothing is written to disk.
+
+**Observed behavior.** From the moment a session opens, Playwright page events are recorded:
+main-frame `framenavigated` (URL changes, in order), `request`/`response`/`requestfailed` for
+xhr/fetch/document/eventsource/websocket resources (method, origin + path, status; static assets
+are counted in `dropped`, not listed; up to 500 requests per snapshot interval), `console` errors
+and warnings, `pageerror`, `dialog` (recorded, then dismissed) and `popup` (URL recorded at the
+event, then closed at once). Everything is recorded synchronously at event time, so the slice
+`session_act` returns is complete when the call returns; a snapshot carries everything since the
+previous snapshot, so a diff between consecutive snapshots includes the behavior in between. This
+is observation only: the server never issues a request of its own, never reads a body, and strips
+query strings because they may carry tokens. The after-tool got the same block, so a single-shot
+`extract_semantic_dom_after` also reports what the page did.
+
+**Secrets.** The server is the one party that knows which strings it typed. A `fill` into a
+password field (detected at fill time) or one marked `secret: true` registers the value, and
+every string in every result is scrubbed of it afterwards: node values after a "show password"
+toggle, a status line that echoes the input, console messages, dialog text, error messages.
+Values shorter than 8 characters are not scrubbed, since they would collide with ordinary page
+copy. Independently, the in-page engine never reports `value` for password fields or for
+`autocomplete` tokens that mark credentials, one-time codes and card data.
+
+**Diffs.** `session_extract({ diff_against })` pairs nodes across two snapshots by identity. The
+resolved primary locator is deliberately *not* the identity: a hidden menu item resolves to
+`getByText` (role locators skip hidden elements) and the same item, once visible, to
+`getByRole`, and that transition is exactly what a test wants reported as a change. Identity is
+the most stable fact available, in order: a test-id locator, else an id locator, else a
+placeholder locator, else tag + role + accessible name; plus the frame path and a document-order
+index so non-unique nodes (list rows) still pair up. Same key on both sides and different fields =
+`changed`, with a `from`/`to` per field, including `primary_locator.playwright` so the agent
+knows which expression is valid in which state; a key only on the new side = `added` (the toast,
+the dialog, the next page's controls); only on the old side = `removed`, as a compact reference.
+A node whose accessible name changed and carries no stable attribute appears as removed + added,
+and the diff's notes say so. Untouched nodes are counted, not listed. On a 25-node form the diff
+after a click is 2.9 KB against 29 KB for a full re-extraction. Bad `diff_against` ids are refused
+before a snapshot is taken, so a refusal consumes nothing.
+
+**Schema 1.2 state.** The diff is only as useful as the state it compares, so every node now
+reports `value` (never for password fields), `aria_expanded`, `aria_selected`, `aria_invalid`,
+`described_by` (the text of the elements `aria-describedby` references, where validation
+messages live), `validation_message` (constraint validation, only when the field is invalid) and
+`options` for `<select>`. Absent state is `null`, never `false`.
 
 ## 9. The consistency layer — conventions as a served artifact
 
@@ -242,8 +305,20 @@ is a reviewable pull request.
 
 ## 11. Honest boundaries
 
-- **Test logic is out of scope** — measured, not just claimed: in real A/B runs, the MCP-side
-  iterations were always behavioral (a redirect target, a lazy modal), never locators.
+- **Test logic is out of scope**, measured rather than claimed: in the first A/B run, the
+  MCP-side iterations were always behavioral (a redirect target, a lazy modal), never locators.
+  v0.5's `observed` block targets exactly those two; the next A/B run measures whether they drop
+  to zero.
+- **Observed requests are what the page made, filtered.** Only xhr/fetch/document/eventsource/
+  websocket resources are listed and capped at 200 per act; bodies and query strings are never
+  captured, so a test can wait on a path and method, not on a payload.
+- **Diff identity needs a stable fact.** A control whose accessible name changes between steps
+  (a button flipping from "Save" to "Saving…") pairs up only through a test-id, id or placeholder;
+  with none of those it appears as removed + added, not changed.
+- **Popups are closed, not followed.** A flow that continues in a new window (SSO, OAuth) cannot
+  be walked in a session; the popup's URL is recorded and the window closed. Playwright reports
+  a popup only after its initial navigation committed, so that one request has already been made
+  by the browser; the server issues none.
 - **Closed shadow roots** created by declarative shadow DOM (parsed before scripts run) evade the
   instrumentation and appear only via heuristic.
 - **Cross-origin iframes** are deliberately opaque even though CDP could technically reach them —

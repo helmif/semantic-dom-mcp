@@ -39,6 +39,14 @@ export interface RawNodeProperties {
   is_disabled: boolean | null;
   is_checked: boolean | null;
   is_visible: boolean;
+  // schema 1.2 — assertable state
+  value: string | null;
+  aria_expanded: boolean | null;
+  aria_selected: boolean | null;
+  aria_invalid: boolean | null;
+  described_by: string | null;
+  validation_message: string | null;
+  options: Array<{ value: string; label: string; selected: boolean }> | null;
 }
 
 export interface RawNode {
@@ -80,9 +88,6 @@ export interface InPageOptions {
 /** Inherited ancestor visibility flags carried down the traversal stack. */
 interface AncestorFlags {
   displayNone: boolean;
-  opacityZero: boolean;
-  hiddenAttr: boolean;
-  ariaHidden: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -138,21 +143,32 @@ export function __qaRole(el: Element): string | null {
 /* (precedence: aria-label > aria-labelledby > <label> > text)          */
 /* ------------------------------------------------------------------ */
 
-export function __qaLabelText(el: Element): string | null {
-  // aria-labelledby references
-  var labelledBy = el.getAttribute("aria-labelledby");
-  if (labelledBy) {
-    var root = el.getRootNode() as Document | ShadowRoot;
-    var parts: string[] = [];
-    var ids = labelledBy.split(/\s+/);
-    for (var i = 0; i < ids.length; i++) {
-      if (!ids[i]) continue;
-      var ref = root.getElementById ? root.getElementById(ids[i]!) : null;
-      if (ref) parts.push(__qaCollapse(ref.textContent));
+/**
+ * Joined, collapsed text of the elements an ID-reference attribute
+ * (aria-labelledby, aria-describedby) points at; null when nothing resolves.
+ * Ids are resolved in the element's own root (document or shadow root).
+ */
+export function __qaIdRefsText(el: Element, attr: string): string | null {
+  var raw = el.getAttribute(attr);
+  if (!raw) return null;
+  var root = el.getRootNode() as Document | ShadowRoot;
+  var parts: string[] = [];
+  var ids = raw.split(/\s+/);
+  for (var i = 0; i < ids.length; i++) {
+    if (!ids[i]) continue;
+    var ref = root.getElementById ? root.getElementById(ids[i]!) : null;
+    if (ref) {
+      var t = __qaCollapse(ref.textContent);
+      if (t) parts.push(t);
     }
-    var joined = __qaCollapse(parts.join(" "));
-    if (joined) return joined;
   }
+  var joined = __qaCollapse(parts.join(" "));
+  return joined || null;
+}
+
+export function __qaLabelText(el: Element): string | null {
+  var labelledBy = __qaIdRefsText(el, "aria-labelledby");
+  if (labelledBy) return labelledBy;
   // native label association (label[for] / wrapping label)
   var labels = (el as HTMLInputElement).labels;
   if (labels && labels.length > 0) {
@@ -301,30 +317,42 @@ export function __qaShouldInclude(el: Element, role: string | null): boolean {
 /* Properties & visibility                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * `is_visible` predicts `expect(locator).toBeVisible()`, so it follows
+ * Playwright's own rule: not display:none (self or ancestor), `visibility`
+ * not hidden/collapse, and a bounding box with BOTH width and height > 0
+ * (`display: contents` delegates to its children). Opacity and aria-hidden
+ * do not count for Playwright's visibility and therefore not here either.
+ */
 export function __qaVisibility(el: Element, anc: AncestorFlags): {
   visible: boolean;
   self: AncestorFlags;
   pointer: boolean;
 } {
   var cs = window.getComputedStyle(el);
-  var self: AncestorFlags = {
-    displayNone: anc.displayNone || cs.display === "none",
-    opacityZero: anc.opacityZero || parseFloat(cs.opacity) === 0,
-    hiddenAttr: anc.hiddenAttr || el.hasAttribute("hidden"),
-    ariaHidden: anc.ariaHidden || el.getAttribute("aria-hidden") === "true",
-  };
-  var hidden = self.displayNone || self.opacityZero || self.hiddenAttr || self.ariaHidden;
+  var self: AncestorFlags = { displayNone: anc.displayNone || cs.display === "none" };
+  var hidden = self.displayNone;
   if (!hidden && (cs.visibility === "hidden" || cs.visibility === "collapse")) hidden = true;
-  if (!hidden) {
-    var rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) hidden = true;
-  }
-  if (!hidden && el instanceof HTMLElement && el.offsetParent === null && cs.position !== "fixed") {
-    // <body>/<html> legitimately have no offsetParent
-    var t = el.tagName.toLowerCase();
-    if (t !== "body" && t !== "html") hidden = true;
-  }
+  if (!hidden) hidden = !__qaHasBox(el, cs);
   return { visible: !hidden, self: self, pointer: cs.cursor === "pointer" };
+}
+
+/** Playwright's box test: width and height both > 0; display:contents looks at children. */
+export function __qaHasBox(el: Element, cs: CSSStyleDeclaration): boolean {
+  if (cs.display === "contents") {
+    for (var child = el.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 1 && __qaHasBox(child as Element, window.getComputedStyle(child as Element))) return true;
+      if (child.nodeType === 3) {
+        var range = document.createRange();
+        range.selectNode(child);
+        var tr = range.getBoundingClientRect();
+        if (tr.width > 0 && tr.height > 0) return true;
+      }
+    }
+    return false;
+  }
+  var rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 /**
@@ -394,6 +422,57 @@ export function __qaProperties(el: Element, visible: boolean): RawNodeProperties
     // aria-checked="mixed" stays null (tri-state has no boolean answer)
   }
 
+  // --- schema 1.2: assertable state -----------------------------------
+
+  // Current value. Credential fields are NEVER surfaced: password type, and
+  // autocomplete tokens that mark passwords, one-time codes and card data
+  // (a "show password" toggle turns type=password into type=text; the token
+  // survives that). checkbox/radio values are static attributes, not state.
+  var value: string | null = null;
+  if (isFormField) {
+    var vt = tag === "input" ? ((el as HTMLInputElement).type || "text").toLowerCase() : "";
+    var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+    var credential =
+      vt === "password" || /(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year)(\s|$)/.test(ac);
+    if (!credential && vt !== "checkbox" && vt !== "radio" && vt !== "file" && vt !== "hidden") {
+      var rawValue = (el as HTMLInputElement).value;
+      if (typeof rawValue === "string") value = rawValue.length > 200 ? rawValue.slice(0, 200) : rawValue;
+    }
+  }
+
+  var expanded = __qaAriaBool(el.getAttribute("aria-expanded"));
+  var selected = __qaAriaBool(el.getAttribute("aria-selected"));
+  if (selected === null && tag === "option") selected = (el as HTMLOptionElement).selected;
+  // aria-invalid: true | grammar | spelling → invalid; false → valid; empty or
+  // unknown tokens mean "not set" per ARIA and stay null.
+  var invalidAttr = el.getAttribute("aria-invalid");
+  var invalid: boolean | null = null;
+  if (invalidAttr === "true" || invalidAttr === "grammar" || invalidAttr === "spelling") invalid = true;
+  else if (invalidAttr === "false") invalid = false;
+
+  // aria-describedby is where hint text and validation messages live.
+  var describedBy = __qaIdRefsText(el, "aria-describedby");
+  if (describedBy && describedBy.length > 200) describedBy = describedBy.slice(0, 200);
+
+  // Constraint-validation message, only when the browser says the field is invalid.
+  var validationMessage: string | null = null;
+  if (isFormField) {
+    var fe = el as HTMLInputElement;
+    if (fe.validity && !fe.validity.valid && fe.validationMessage) {
+      validationMessage = __qaCollapse(fe.validationMessage) || null;
+    }
+  }
+
+  var options: Array<{ value: string; label: string; selected: boolean }> | null = null;
+  if (tag === "select") {
+    options = [];
+    var opts = (el as HTMLSelectElement).options;
+    for (var oi = 0; oi < opts.length && oi < 50; oi++) {
+      var o = opts[oi]!;
+      options.push({ value: o.value, label: __qaCollapse(o.label || o.textContent), selected: o.selected });
+    }
+  }
+
   return {
     type: type,
     placeholder: placeholder,
@@ -403,7 +482,21 @@ export function __qaProperties(el: Element, visible: boolean): RawNodeProperties
     is_disabled: disabled,
     is_checked: checked,
     is_visible: visible,
+    value: value,
+    aria_expanded: expanded,
+    aria_selected: selected,
+    aria_invalid: invalid,
+    described_by: describedBy,
+    validation_message: validationMessage,
+    options: options,
   };
+}
+
+/** "true" → true, "false" → false, anything else (absent, "undefined") → null. */
+export function __qaAriaBool(attr: string | null): boolean | null {
+  if (attr === "true") return true;
+  if (attr === "false") return false;
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -528,7 +621,9 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
         node.properties.text_content = ancText.length > 120 ? ancText.slice(0, 120) : ancText;
         node.context_note =
           (node.context_note ? node.context_note + " " : "") +
-          "Live region element is empty; text_content was taken from its enclosing container.";
+          "Live region element is empty; text_content was taken from its enclosing container (" +
+          (hops + 1) +
+          " level(s) up); assert the text on that container (e.g. locator('..') from this node), not on the empty live region.";
         break;
       }
       anc = anc.parentElement;
@@ -559,7 +654,7 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
   };
 
   interface StackEntry { el: Element; depth: number; inShadow: boolean; anc: AncestorFlags; ptr: boolean }
-  var rootAnc: AncestorFlags = { displayNone: false, opacityZero: false, hiddenAttr: false, ariaHidden: false };
+  var rootAnc: AncestorFlags = { displayNone: false };
   var stack: StackEntry[] = [{ el: document.documentElement, depth: 0, inShadow: false, anc: rootAnc, ptr: false }];
 
   while (stack.length > 0) {

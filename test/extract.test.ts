@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeBrowser, extractSemanticDom, listFrames, type ExtractInput } from "../src/browser.js";
 import {
+  assertReadOnlyExtract,
   assertValidExtract,
   htmlPage,
   nodeByTestId,
@@ -45,7 +46,7 @@ describe("form grouping", () => {
           <div role="button" tabindex="0" data-testid="pref-toggle">Toggle prefs</div>
         </section>`),
     );
-    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/form`)));
+    const extract = assertReadOnlyExtract(await extractSemanticDom(input(`${fx.base}/form`)));
 
     const email = extract.interactive_nodes.find((n) => n.properties.type === "email")!;
     expect(email.form_group).toBe("form#checkout");
@@ -72,13 +73,18 @@ describe("form grouping", () => {
 
 describe("visibility resolution (each rule)", () => {
   const cases: Array<{ id: string; visible: boolean; rule: string }> = [
+    // is_visible predicts expect(locator).toBeVisible(), so it follows
+    // Playwright's rule: opacity and aria-hidden do NOT hide; a box needs
+    // width AND height > 0.
     { id: "v-display", visible: false, rule: "display:none on ancestor" },
     { id: "v-vis", visible: false, rule: "visibility:hidden on self" },
-    { id: "v-opacity", visible: false, rule: "opacity:0 on ancestor" },
-    { id: "v-hidden-attr", visible: false, rule: "hidden attribute" },
-    { id: "v-aria", visible: false, rule: "aria-hidden=true on ancestor" },
+    { id: "v-opacity", visible: true, rule: "opacity:0 is visible to Playwright" },
+    { id: "v-hidden-attr", visible: false, rule: "hidden attribute (display:none via UA stylesheet)" },
+    { id: "v-aria", visible: true, rule: "aria-hidden=true is visible to Playwright's toBeVisible" },
     { id: "v-zero", visible: false, rule: "zero-size bounding box" },
-    { id: "v-fixed", visible: true, rule: "position:fixed is exempt from the offsetParent rule" },
+    { id: "v-zero-height", visible: false, rule: "width > 0 but height 0 (empty live region)" },
+    { id: "v-contents", visible: true, rule: "display:contents with a visible child" },
+    { id: "v-fixed", visible: true, rule: "position:fixed" },
     { id: "v-normal", visible: true, rule: "control case" },
   ];
 
@@ -93,6 +99,8 @@ describe("visibility resolution (each rule)", () => {
         <div aria-hidden="true"><button data-testid="v-aria">E</button></div>
         <div data-testid="v-zero" role="button" tabindex="0"
              style="position:absolute;width:0;height:0;overflow:hidden;padding:0;border:0"></div>
+        <div data-testid="v-zero-height" role="alert"></div>
+        <div data-testid="v-contents" role="button" tabindex="0" style="display:contents"><span>Isi</span></div>
         <button data-testid="v-fixed" style="position:fixed;top:0;left:0">F</button>
         <button data-testid="v-normal">G</button>`),
     );
@@ -107,7 +115,7 @@ describe("visibility resolution (each rule)", () => {
     const extract = assertValidExtract(
       await extractSemanticDom(input(`${fx.base}/visibility`, { include_hidden: false })),
     );
-    const ids = ["v-display", "v-vis", "v-opacity", "v-hidden-attr", "v-aria", "v-zero"];
+    const ids = ["v-display", "v-vis", "v-hidden-attr", "v-zero", "v-zero-height"];
     for (const id of ids) {
       expect(
         extract.interactive_nodes.some((n) => n.primary_locator.playwright === `getByTestId('${id}')`),

@@ -22,7 +22,8 @@ export interface FixtureServer {
 export async function startFixtureServer(): Promise<FixtureServer> {
   const routes = new Map<string, string>();
   const server = http.createServer((req, res) => {
-    const html = routes.get(req.url ?? "");
+    // Match on pathname: fixtures that fetch('/api/x?q=1') must hit '/api/x'.
+    const html = routes.get(new URL(req.url ?? "/", "http://fixture").pathname);
     if (html === undefined) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
@@ -73,6 +74,35 @@ const propertiesSchema = z
     is_disabled: z.boolean().nullable(),
     is_checked: z.boolean().nullable(),
     is_visible: z.boolean(),
+    value: z.string().nullable(),
+    aria_expanded: z.boolean().nullable(),
+    aria_selected: z.boolean().nullable(),
+    aria_invalid: z.boolean().nullable(),
+    described_by: z.string().nullable(),
+    validation_message: z.string().nullable(),
+    options: z.array(z.object({ value: z.string(), label: z.string(), selected: z.boolean() }).strict()).nullable(),
+  })
+  .strict();
+
+const observedSchema = z
+  .object({
+    duration_ms: z.number().int().nonnegative(),
+    navigations: z.array(z.object({ from: z.string(), to: z.string(), at_ms: z.number().int() }).strict()),
+    requests: z.array(
+      z
+        .object({
+          method: z.string(),
+          url: z.string().refine((u) => !u.includes("?"), "query strings must be stripped"),
+          status: z.number().int().nullable(),
+          resource_type: z.string(),
+          failed: z.string().optional(),
+        })
+        .strict(),
+    ),
+    console_errors: z.array(z.object({ level: z.enum(["error", "warning"]), text: z.string() }).strict()),
+    dialogs: z.array(z.object({ type: z.string(), message: z.string(), handled: z.literal("dismissed") }).strict()),
+    popups: z.array(z.object({ url: z.string(), handled: z.literal("closed") }).strict()),
+    dropped: z.object({ requests: z.number().int().nonnegative(), console_errors: z.number().int().nonnegative() }).strict(),
   })
   .strict();
 
@@ -94,7 +124,7 @@ const nodeSchema = z
 
 export const semanticExtractSchema = z
   .object({
-    schema_version: z.literal("1.1"),
+    schema_version: z.literal("1.2"),
     page_metadata: z
       .object({
         title: z.string(),
@@ -107,6 +137,55 @@ export const semanticExtractSchema = z
       })
       .strict(),
     interactive_nodes: z.array(nodeSchema),
+    observed: observedSchema.optional(),
+    snapshot_id: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const semanticDiffSchema = z
+  .object({
+    schema_version: z.literal("1.2"),
+    kind: z.literal("diff"),
+    from_snapshot: z.number().int().positive(),
+    to_snapshot: z.number().int().positive(),
+    page_metadata: z
+      .object({
+        url_before: z.string(),
+        url_after: z.string(),
+        title_before: z.string(),
+        title_after: z.string(),
+        captured_at: z.string().datetime(),
+        notes: z.array(z.string()),
+      })
+      .strict(),
+    summary: z
+      .object({
+        added: z.number().int().nonnegative(),
+        removed: z.number().int().nonnegative(),
+        changed: z.number().int().nonnegative(),
+        unchanged: z.number().int().nonnegative(),
+      })
+      .strict(),
+    added: z.array(nodeSchema),
+    removed: z.array(
+      z
+        .object({
+          frame_path: z.array(z.string()),
+          role: z.string().nullable(),
+          accessible_name: z.string().nullable(),
+          primary_locator: locatorSchema,
+        })
+        .strict(),
+    ),
+    changed: z.array(
+      z
+        .object({
+          node: nodeSchema,
+          changes: z.record(z.object({ from: z.unknown(), to: z.unknown() }).strict()),
+        })
+        .strict(),
+    ),
+    observed: observedSchema.optional(),
   })
   .strict();
 
@@ -122,6 +201,15 @@ export function assertValidExtract(extract: SemanticExtract): SemanticExtract {
         throw new Error(`Shadow-piercing CSS emitted: ${loc.playwright}`);
       }
     }
+  }
+  return extract;
+}
+
+/** Plain extract_semantic_dom output must carry no session/behavior fields. */
+export function assertReadOnlyExtract(extract: SemanticExtract): SemanticExtract {
+  assertValidExtract(extract);
+  if ("observed" in extract || "snapshot_id" in extract) {
+    throw new Error("read-only extraction must not carry observed/snapshot_id");
   }
   return extract;
 }

@@ -85,6 +85,55 @@ From the chat-flow A/B against a hand-written suite:
   after-tool description: accumulating UI (chat threads, lists) can multiply
   matches after capture — scope with .first()/.filter().
 
+## Shipped in v0.5 (2026-09-07): flows, not pages
+
+The single-shot tools see one page. Real scenarios are flows, and the first
+A/B run's only remaining iterations (a redirect target, a late modal) were
+behavior facts the tool never captured. v0.5 closes both gaps.
+
+- **Persistent sessions**: `session_open` → `session_act` → `session_extract`
+  → `session_close` (`session_list` for diagnostics). One live page across
+  calls, fresh context per session, storageState applied. Guardrails: the
+  allowlist is re-checked after every action batch and before every
+  snapshot (an off-allowlist session is closed, never extracted), idle TTL
+  (`QA_MCP_SESSION_TTL_MS`), open-session cap (`QA_MCP_MAX_SESSIONS`), one
+  in-flight call per session, bounded snapshot history.
+- **Behavior capture**: `observed` on `session_act` and on
+  `extract_semantic_dom_after`. Main-frame navigations, xhr/fetch/document
+  requests as method + path + status (bodies never read, query strings
+  stripped), console errors, dialogs (dismissed), popups (closed). Feeds
+  `waitForURL` / `waitForResponse` from facts.
+- **Snapshot diff**: `session_extract({ diff_against })` returns added,
+  removed and changed nodes plus the behavior observed between the two
+  snapshots. ~90% smaller than re-extracting the page after a step.
+- **Schema 1.2** (additive): `value` (never for passwords), `aria_expanded`,
+  `aria_selected`, `aria_invalid`, `described_by`, `validation_message`,
+  `options` on every node; `observed` and `snapshot_id` on extractions.
+- New declared action types `select` and `goto` (allowlisted); `fill` takes
+  `secret: true`.
+- **Secret redaction**: values typed into password fields (detected at fill
+  time) or flagged `secret` are scrubbed from every string the server returns.
+  Credential `autocomplete` tokens suppress `value` like `type=password` does.
+- **`is_visible` now matches Playwright's `toBeVisible()`** (width and height
+  both > 0; opacity and `aria-hidden` no longer count). Found by running a
+  generated test against a fixture: the extractor had called an empty live
+  region visible.
+- MCP tool annotations (`readOnlyHint`, `openWorldHint: false`) on every tool.
+- Conventions gained flow, behavior and value-assertion rules.
+
+## Next
+
+- **Locator verification** (`verify_locators` / spec lint): count every
+  `getBy*` / `locator()` in a written spec against the live page; doubles as
+  drift detection in CI against committed extracts.
+- **Progressive disclosure**: `extract_outline` (landmarks, forms, dialogs
+  with counts) then scoped extraction; `output: "file"` for large pages.
+- **Page object generation** from an extraction, with stable property names.
+- **Conventions as a skill** (`SKILL.md` / `AGENTS.md`) plus a
+  `get_conventions` tool, for clients that surface MCP prompts poorly.
+- **Auth refresh**: a declared login flow with credentials from env only that
+  rewrites the storageState file.
+
 ## Later
 - **MCP SDK v2 migration** once it's stable (expected on/after 2026-07-28)
   and v1 approaches end of fixes — isolated to `src/server.ts` registration

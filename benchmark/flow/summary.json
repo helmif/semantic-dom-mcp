@@ -1,0 +1,194 @@
+{
+  "session": "s_9826638dd534",
+  "steps": {
+    "01-open": {
+      "chars": 317,
+      "est_tokens": 79,
+      "ms": 1084,
+      "isError": false
+    },
+    "02-login-full": {
+      "chars": 8625,
+      "est_tokens": 2156,
+      "ms": 54,
+      "isError": false
+    },
+    "03-bad-login-act": {
+      "chars": 708,
+      "est_tokens": 177,
+      "ms": 297,
+      "isError": false
+    },
+    "04-bad-login-diff": {
+      "chars": 6309,
+      "est_tokens": 1577,
+      "ms": 12,
+      "isError": false
+    },
+    "05-good-login-act": {
+      "chars": 1014,
+      "est_tokens": 254,
+      "ms": 912,
+      "isError": false
+    },
+    "06-dashboard-diff": {
+      "chars": 13102,
+      "est_tokens": 3276,
+      "ms": 13,
+      "isError": false
+    },
+    "07-menu-act": {
+      "chars": 411,
+      "est_tokens": 103,
+      "ms": 130,
+      "isError": false
+    },
+    "08-menu-diff": {
+      "chars": 10777,
+      "est_tokens": 2694,
+      "ms": 16,
+      "isError": false
+    },
+    "09-logout-act": {
+      "chars": 846,
+      "est_tokens": 212,
+      "ms": 147,
+      "isError": false
+    },
+    "10-close": {
+      "chars": 147,
+      "est_tokens": 37,
+      "ms": 7,
+      "isError": false
+    }
+  },
+  "total_est_tokens": 10565,
+  "facts": {
+    "bad_login_request": {
+      "method": "POST",
+      "url": "http://127.0.0.1:4177/api/auth/login",
+      "status": 401,
+      "resource_type": "fetch"
+    },
+    "bad_login_toast": [],
+    "good_login_request": {
+      "method": "POST",
+      "url": "http://127.0.0.1:4177/api/auth/login",
+      "status": 200,
+      "resource_type": "fetch"
+    },
+    "redirect": [
+      {
+        "from": "http://127.0.0.1:4177/login",
+        "to": "http://127.0.0.1:4177/dashboard",
+        "at_ms": 32
+      }
+    ],
+    "dashboard_added": {
+      "added": 9,
+      "removed": 7,
+      "changed": 0,
+      "unchanged": 0
+    },
+    "welcome_dialog": [
+      {
+        "strategy": "role",
+        "playwright": "getByRole('dialog', { name: 'Selamat datang' })",
+        "is_unique": true
+      }
+    ],
+    "menu_expanded_change": {
+      "properties.aria_expanded": {
+        "from": false,
+        "to": true
+      }
+    },
+    "menu_items": [
+      {
+        "loc": {
+          "strategy": "role",
+          "playwright": "getByRole('menuitem', { name: 'Profil' })",
+          "is_unique": true
+        },
+        "changes": {
+          "primary_locator.playwright": {
+            "from": "getByText('Profil')",
+            "to": "getByRole('menuitem', { name: 'Profil' })"
+          },
+          "properties.is_visible": {
+            "from": false,
+            "to": true
+          }
+        }
+      },
+      {
+        "loc": {
+          "strategy": "role",
+          "playwright": "getByRole('menuitem', { name: 'Pengaturan' })",
+          "is_unique": true
+        },
+        "changes": {
+          "primary_locator.playwright": {
+            "from": "getByText('Pengaturan')",
+            "to": "getByRole('menuitem', { name: 'Pengaturan' })"
+          },
+          "properties.is_visible": {
+            "from": false,
+            "to": true
+          }
+        }
+      },
+      {
+        "loc": {
+          "strategy": "role",
+          "playwright": "getByRole('menuitem', { name: 'Bantuan' })",
+          "is_unique": true
+        },
+        "changes": {
+          "primary_locator.playwright": {
+            "from": "getByText('Bantuan')",
+            "to": "getByRole('menuitem', { name: 'Bantuan' })"
+          },
+          "properties.is_visible": {
+            "from": false,
+            "to": true
+          }
+        }
+      },
+      {
+        "loc": {
+          "strategy": "test-id",
+          "playwright": "getByTestId('logout')",
+          "is_unique": true
+        },
+        "changes": {
+          "properties.is_visible": {
+            "from": false,
+            "to": true
+          }
+        }
+      }
+    ],
+    "logout_request": {
+      "method": "POST",
+      "url": "http://127.0.0.1:4177/api/auth/logout",
+      "status": 200,
+      "resource_type": "fetch"
+    },
+    "logout_redirect": [
+      {
+        "from": "http://127.0.0.1:4177/dashboard",
+        "to": "http://127.0.0.1:4177/login",
+        "at_ms": 24
+      }
+    ],
+    "closed": {
+      "session_id": "s_9826638dd534",
+      "closed": true,
+      "was_open": true,
+      "actions_performed": 8,
+      "snapshots_taken": 4,
+      "lifetime_ms": 2144
+    }
+  }
+}

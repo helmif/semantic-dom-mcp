@@ -16,7 +16,10 @@ import type { Browser, BrowserContext, Frame, Page } from "playwright";
 import { buildEvaluateExpression, CLOSED_SHADOW_INIT_SCRIPT } from "./extractor/inPage.js";
 import { buildPwLocator, resolveLocators, type CountCache } from "./extractor/locators.js";
 import type { RawExtractResult } from "./extractor/traverse.js";
-import type { InteractiveNode, LocatorStrategy, SemanticExtract } from "./types.js";
+import { observePage } from "./observe.js";
+import { redactDeep, registerSecret } from "./secrets.js";
+import { emptyProperties, type InteractiveNode, type LocatorStrategy, type SemanticExtract } from "./types.js";
+import { safeOrigin, stripQuery } from "./url.js";
 
 const NAV_TIMEOUT_MS = 30_000;
 const WAIT_SELECTOR_TIMEOUT_MS = 15_000;
@@ -40,7 +43,7 @@ export class ExtractError extends Error {
 
 let browserPromise: Promise<Browser> | undefined;
 
-function getBrowser(): Promise<Browser> {
+export function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
     console.error("[semantic-dom-mcp] launching chromium (headless)");
     browserPromise = chromium.launch({ headless: true });
@@ -110,7 +113,7 @@ export function checkUrlAllowed(rawUrl: string): string | null {
 
 export type ViewportPreset = "desktop" | "mobile";
 
-async function newContext(browser: Browser, viewport: ViewportPreset = "desktop"): Promise<BrowserContext> {
+export async function newContext(browser: Browser, viewport: ViewportPreset = "desktop"): Promise<BrowserContext> {
   const storageState = process.env.QA_MCP_STORAGE_STATE;
   if (storageState && !existsSync(storageState)) {
     throw new ExtractError(
@@ -146,14 +149,6 @@ export interface FrameEntry {
   sameOrigin: boolean;
   /** Reachable = same-origin AND every ancestor frame is reachable. */
   reachable: boolean;
-}
-
-function safeOrigin(url: string): string | null {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
 }
 
 async function frameSelector(frame: Frame): Promise<string | null> {
@@ -268,21 +263,12 @@ async function crossOriginMarker(entry: FrameEntry, notes: string[]): Promise<In
       ...(isUnique ? {} : { disambiguation: "Multiple iframe elements match; scope by src or position." }),
     },
     fallback_locators: [],
-    properties: {
-      type: null,
-      placeholder: null,
-      text_content: null,
-      href: null,
-      is_required: null,
-      is_disabled: null,
-      is_checked: null,
-      is_visible: isVisible,
-    },
+    properties: emptyProperties({ is_visible: isVisible }),
     context_note: `Cross-origin iframe (${entry.url || "unknown URL"}): DOM is unreachable from this context and was NOT extracted. Tests can still interact via frameLocator('${selector.replace(/'/g, "\\'")}').`,
   };
 }
 
-async function navigateForExtraction(
+export async function navigateForExtraction(
   page: Page,
   input: Pick<ExtractInput, "url" | "wait_for" | "wait_selector">,
 ): Promise<void> {
@@ -312,7 +298,7 @@ async function navigateForExtraction(
 }
 
 /** Snapshots the page's CURRENT state into a SemanticExtract. */
-async function snapshotPage(
+export async function snapshotPage(
   page: Page,
   input: Pick<ExtractInput, "include_hidden" | "max_nodes" | "include_click_targets">,
   extraNotes: string[] = [],
@@ -402,8 +388,8 @@ async function snapshotPage(
       );
     }
 
-    return {
-      schema_version: "1.1",
+    return redactDeep<SemanticExtract>({
+      schema_version: "1.2",
       page_metadata: {
         title: await page.title(),
         url: page.url(),
@@ -414,7 +400,7 @@ async function snapshotPage(
         notes,
       },
       interactive_nodes: nodes,
-    };
+    });
 }
 
 export async function extractSemanticDom(input: ExtractInput): Promise<SemanticExtract> {
@@ -440,9 +426,11 @@ export interface ActionLocator {
 }
 
 export type PageAction =
-  | { type: "fill"; locator: ActionLocator; value: string }
+  | { type: "fill"; locator: ActionLocator; value: string; secret?: boolean | undefined }
   | { type: "click"; locator: ActionLocator }
   | { type: "press"; locator: ActionLocator; key: string }
+  | { type: "select"; locator: ActionLocator; value: string }
+  | { type: "goto"; url: string }
   | { type: "wait"; ms: number };
 
 export interface ExtractAfterActionsInput extends ExtractInput {
@@ -456,6 +444,39 @@ export interface ExtractAfterActionsInput extends ExtractInput {
 
 const ACTION_TIMEOUT_MS = 10_000;
 
+/** The page's current host checked against the allowlist; null when fine. Pure — callers own their error. */
+export function allowlistDenial(page: Page): string | null {
+  return checkUrlAllowed(page.url());
+}
+
+/** After actions ran, the page must still be on an allowlisted host — else nothing is extracted. */
+export function assertStillAllowlisted(page: Page): void {
+  const postDenial = allowlistDenial(page);
+  if (postDenial) {
+    throw new ExtractError(
+      "navigated_off_allowlist",
+      `After the actions ran the page is at '${stripQuery(page.url())}', which is not allowlisted: ${postDenial}`,
+      "The declared actions triggered a navigation outside QA_MCP_ALLOWED_HOSTS; nothing was extracted.",
+    );
+  }
+}
+
+/** Waits for `wait_selector_after` (visible) with a structured timeout error. */
+export async function waitAfterActions(page: Page, selector: string | undefined, settleMs: number): Promise<void> {
+  if (selector) {
+    try {
+      await page.waitForSelector(selector, { state: "visible", timeout: WAIT_SELECTOR_TIMEOUT_MS });
+    } catch {
+      throw new ExtractError(
+        "wait_selector_after_timeout",
+        `wait_selector_after '${selector}' did not become visible within ${WAIT_SELECTOR_TIMEOUT_MS / 1000}s after the actions.`,
+        "Verify the selector and that the declared actions actually trigger that UI; or extract without it to inspect the resulting state.",
+      );
+    }
+  }
+  if (settleMs > 0) await page.waitForTimeout(settleMs);
+}
+
 function actionTarget(page: Page, loc: ActionLocator) {
   let target = buildPwLocator(page.mainFrame(), {
     strategy: loc.strategy,
@@ -466,25 +487,57 @@ function actionTarget(page: Page, loc: ActionLocator) {
   return target;
 }
 
-async function performAction(page: Page, action: PageAction, index: number): Promise<void> {
+export async function performAction(page: Page, action: PageAction, index: number): Promise<void> {
   try {
     switch (action.type) {
       case "wait":
         await page.waitForTimeout(action.ms);
         return;
-      case "fill":
-        await actionTarget(page, action.locator).fill(action.value, { timeout: ACTION_TIMEOUT_MS });
+      case "fill": {
+        const target = actionTarget(page, action.locator);
+        // Values typed into password fields (or flagged secret) are scrubbed
+        // from every output string from now on.
+        const isPassword = await target
+          .evaluate((el) => (el as HTMLInputElement).type === "password", undefined, { timeout: ACTION_TIMEOUT_MS })
+          .catch(() => false);
+        if (action.secret || isPassword) registerSecret(action.value);
+        await target.fill(action.value, { timeout: ACTION_TIMEOUT_MS });
         return;
+      }
       case "click":
         await actionTarget(page, action.locator).click({ timeout: ACTION_TIMEOUT_MS });
         return;
       case "press":
         await actionTarget(page, action.locator).press(action.key, { timeout: ACTION_TIMEOUT_MS });
         return;
+      case "select":
+        await actionTarget(page, action.locator).selectOption(action.value, { timeout: ACTION_TIMEOUT_MS });
+        return;
+      case "goto": {
+        // In-flow navigation (checkout after cart) — allowlisted like any URL.
+        const denial = checkUrlAllowed(action.url);
+        if (denial) {
+          throw new ExtractError(
+            "url_not_allowed",
+            `Action ${index + 1} (goto): ${denial}`,
+            /^Not a valid URL/.test(denial)
+              ? "goto needs an absolute http(s) URL; build it from observed.navigations or the page URL."
+              : undefined,
+          );
+        }
+        await page.goto(action.url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
+        return;
+      }
     }
   } catch (err) {
+    if (err instanceof ExtractError) throw err;
     // Never echo fill values (they may hold credentials) — only the locator.
-    const where = action.type === "wait" ? "wait" : `${action.locator.strategy}='${action.locator.value}'`;
+    const where =
+      action.type === "wait"
+        ? "wait"
+        : action.type === "goto"
+          ? `url='${stripQuery(action.url)}'`
+          : `${action.locator.strategy}='${action.locator.value}'`;
     throw new ExtractError(
       "action_failed",
       `Action ${index + 1} (${action.type}) failed on ${where}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
@@ -512,35 +565,23 @@ export async function extractAfterActions(input: ExtractAfterActionsInput): Prom
       `[semantic-dom-mcp] extracting after ${input.actions.length} declared action(s) (wait_for=${input.wait_for})`,
     );
     await navigateForExtraction(page, input);
-    for (let i = 0; i < input.actions.length; i++) {
-      await performAction(page, input.actions[i]!, i);
-    }
-    if (input.wait_selector_after) {
-      try {
-        await page.waitForSelector(input.wait_selector_after, {
-          state: "visible",
-          timeout: WAIT_SELECTOR_TIMEOUT_MS,
-        });
-      } catch {
-        throw new ExtractError(
-          "wait_selector_after_timeout",
-          `wait_selector_after '${input.wait_selector_after}' did not become visible within ${WAIT_SELECTOR_TIMEOUT_MS / 1000}s after the actions.`,
-          "Verify the selector and that the declared actions actually trigger that UI; or extract without it to inspect the resulting state.",
-        );
+    const observer = observePage(page);
+    const mark = observer.mark();
+    try {
+      for (let i = 0; i < input.actions.length; i++) {
+        await performAction(page, input.actions[i]!, i);
+        assertStillAllowlisted(page); // never run the next action on a foreign host
       }
+      await waitAfterActions(page, input.wait_selector_after, input.settle_ms);
+      assertStillAllowlisted(page);
+      const observed = redactDeep(observer.since(mark));
+      const extract = await snapshotPage(page, input, [
+        `State captured AFTER ${input.actions.length} declared action(s); this is still a single snapshot of that post-interaction moment. Transient UI may expire before locator verification (such locators report 0 matches).`,
+      ]);
+      return { ...extract, observed };
+    } finally {
+      observer.stop();
     }
-    if (input.settle_ms > 0) await page.waitForTimeout(input.settle_ms);
-    const postDenial = checkUrlAllowed(page.url());
-    if (postDenial) {
-      throw new ExtractError(
-        "navigated_off_allowlist",
-        `After the actions ran the page is at '${page.url()}', which is not allowlisted: ${postDenial}`,
-        "The declared actions triggered a navigation outside QA_MCP_ALLOWED_HOSTS; nothing was extracted.",
-      );
-    }
-    return snapshotPage(page, input, [
-      `State captured AFTER ${input.actions.length} declared action(s); this is still a single snapshot of that post-interaction moment. Transient UI may expire before locator verification (such locators report 0 matches).`,
-    ]);
   }, input.viewport);
 }
 

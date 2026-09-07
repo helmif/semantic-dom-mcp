@@ -9,13 +9,16 @@
 import type { InPageOptions } from "./traverse.js";
 import {
   __qaAccessibleName,
+  __qaAriaBool,
   __qaBuildNode,
   __qaCandidates,
   __qaClickTargetHeading,
   __qaCollapse,
   __qaCssPath,
+  __qaHasBox,
   __qaHasContent,
   __qaExtract,
+  __qaIdRefsText,
   __qaFormGroup,
   __qaIsGeneratedId,
   __qaLabelText,
@@ -30,6 +33,9 @@ import {
 
 const IN_PAGE_FUNCTIONS: ReadonlyArray<(...args: never[]) => unknown> = [
   __qaCollapse,
+  __qaAriaBool,
+  __qaIdRefsText,
+  __qaHasBox,
   __qaTextContent,
   __qaIsGeneratedId,
   __qaClickTargetHeading,

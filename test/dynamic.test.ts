@@ -195,11 +195,11 @@ describe("extract_semantic_dom_after (declared actions)", () => {
 
   it("surfaces failing actions as structured errors without echoing fill values", async () => {
     fx.route("/plain-form", htmlPage(`<input placeholder="Nama">`));
-    const err = await extractAfterActions(
+    const err = (await extractAfterActions(
       afterInput(`${fx.base}/plain-form`, [
         { type: "fill", locator: { strategy: "test-id", value: "does-not-exist" }, value: "SECRET-VALUE" },
       ]),
-    ).catch((e) => e as Error & { code: string });
+    ).catch((e) => e)) as Error & { code: string };
     expect(err).toMatchObject({ code: "action_failed" });
     expect(err.message).toContain("test-id='does-not-exist'");
     expect(err.message).not.toContain("SECRET-VALUE");

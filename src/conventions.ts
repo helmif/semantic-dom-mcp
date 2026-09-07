@@ -27,6 +27,17 @@ export const TEAM_CONVENTIONS = `TEAM CONVENTIONS (non-negotiable):
   (chat threads, notification lists, growing tables), scope with .first() or
   .filter() and make asserted content unique per run; never assert bare
   visibility on a locator that content growth can multiply.
+- Flows: for multi-step scenarios use session_open → session_act →
+  session_extract (diff_against: 'previous') → session_close. Treat a diff's
+  \`added\` nodes as the assertion list for that step and \`changed\` as the
+  state transitions to assert (value, is_disabled, aria_invalid, described_by).
+- Behavior: use \`observed.navigations\` for expect(page).toHaveURL / waitForURL
+  and \`observed.requests\` (method + path + status) for page.waitForResponse
+  before asserting UI that depends on the response. Never guess redirect
+  targets or API paths — if they are not in \`observed\`, do not wait on them.
+- Values: assert field state with the 1.2 properties (value, aria_invalid,
+  described_by, validation_message, options) via toHaveValue / toHaveAttribute
+  / toContainText on the described_by element — not by re-reading the DOM.
 - Do NOT invent selectors, ids, roles, or text not present in the data. If a
   required element for the scenario is missing, STOP and say what's missing.`;
 
@@ -49,7 +60,7 @@ ${TEAM_CONVENTIONS}
 SCENARIO:
 ${args.scenario}
 
-SEMANTIC DOM (single source of truth for locators):
+SEMANTIC DOM (single source of truth for locators; may be a full extraction or a session diff):
 \`\`\`json
 ${args.extract_json}
 \`\`\``;
