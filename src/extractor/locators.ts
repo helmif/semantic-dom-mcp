@@ -118,11 +118,15 @@ export async function resolveLocators(frame: Frame, raw: RawNode, cache: CountCa
   const resolved: Array<{ locator: Locator; candidate: RawLocatorCandidate }> = [];
   let note: string | null = null;
 
-  // Counts run concurrently; Promise.all preserves candidate priority order.
-  const counts = await Promise.all(raw.candidates.map((c) => countMatches(frame, c, cache)));
-  for (let i = 0; i < raw.candidates.length; i++) {
-    const candidate = raw.candidates[i]!;
-    const count = counts[i]!;
+  // Candidates are verified in priority order and verification stops at the
+  // first unique semantic one: the primary is what a test uses, and once it
+  // is unique the remaining candidates would only be fallbacks nobody needs
+  // (the wire format drops them). That cuts Playwright round trips from
+  // roughly one per candidate to roughly one per node on well-labelled pages.
+  // Ambiguous nodes keep going, so a unique css fallback and .nth correlation
+  // are still available for them.
+  for (const candidate of raw.candidates) {
+    const count = await countMatches(frame, candidate, cache);
     if (count === null) {
       note = `A '${candidate.strategy}' locator candidate could not be evaluated by Playwright and was omitted.`;
       continue;
@@ -135,6 +139,7 @@ export async function resolveLocators(frame: Frame, raw: RawNode, cache: CountCa
       },
       candidate,
     });
+    if (count === 1 && !candidate.last_resort) break;
   }
 
   if (resolved.length === 0) {

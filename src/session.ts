@@ -328,9 +328,7 @@ export async function extractInSession(input: SessionExtractInput): Promise<Sema
     }
 
     // Snapshot first; only a successful snapshot consumes the recording and an id.
-    const body = await snapshotPage(s.page, input, [
-      `Session snapshot #${nextId} of '${s.id}' after ${s.actionsPerformed} action(s) in this session; a single moment of the live page.`,
-    ]);
+    const body = await snapshotPage(s.page, input, [`Session snapshot #${nextId} after ${s.actionsPerformed} action(s).`]);
     const observed = redactDeep(s.observer.since(s.baseline));
     s.observer.compact();
     s.baseline = s.observer.mark();

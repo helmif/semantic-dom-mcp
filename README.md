@@ -126,7 +126,12 @@ ones.
   `is_disabled: true` with a note. The conventions instruct the model to write the interactions
   that change state, not to assume it stays disabled. In a session, the diff shows the transition
   itself (`is_disabled: false → true`), so the test asserts a fact rather than an assumption.
-- **Assertable state (schema 1.2):** every node reports `value` (never for password fields),
+- **Compact wire format (schema 1.3):** results are compact JSON and a node field that carries no
+  information is omitted: `null` fields, `frame_path: []`, `in_shadow: false`, `kind: "element"`,
+  empty `fallback_locators`, and `text_content` equal to `accessible_name`. Absent means
+  null/false/empty; `is_visible` is always present. Fallbacks appear only when the primary is
+  ambiguous or brittle. Same facts, about a third of the tokens.
+- **Assertable state (since schema 1.2):** every node reports `value` (never for password fields),
   `aria_expanded`, `aria_selected`, `aria_invalid`, `described_by` (the text of the elements
   `aria-describedby` points at, where validation messages live), `validation_message` (browser
   constraint validation) and, for `<select>`, `options`. Absent state is `null`, never `false`.
@@ -188,5 +193,5 @@ npm run build      # compile to dist/ (clients can then use "command": "node", "
 Repo layout: `src/index.ts` (bootstrap) · `src/server.ts` (MCP surface) · `src/browser.ts`
 (Playwright layer + single-shot orchestration) · `src/session.ts` (persistent sessions) ·
 `src/observe.ts` (behavior capture) · `src/diff.ts` (snapshot diff) · `src/extractor/` (in-page
-engine + locator resolution) · `src/types.ts` (frozen contract, schema 1.2) · `src/conventions.ts`
+engine + locator resolution) · `src/types.ts` (frozen contract, schema 1.3) · `src/compact.ts` (wire rules) · `src/conventions.ts`
 (single source of team conventions).

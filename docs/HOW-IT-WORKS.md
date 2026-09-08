@@ -186,8 +186,11 @@ reason `is_unique` means something:
   best semantic candidate is still returned — with `is_unique: false` and concrete
   `disambiguation`: a computed `.nth(i)` index (found by correlating the element's structural
   path against the match list) and, when available, a stable ancestor test-id to scope with.
-- Redundant brittle fallbacks are dropped when a unique semantic locator exists; counts are
-  cached per frame and resolved in bounded parallel batches for speed.
+- Candidates are verified in priority order and verification **stops at the first unique
+  semantic candidate** (v0.6): the primary is what a test uses, and once it is unique the rest
+  would only be fallbacks nobody reads. Ambiguous nodes run the whole chain, so a unique
+  structural fallback and the `.nth()` correlation stay available for them. Counts are cached
+  per frame and nodes resolve in bounded parallel batches.
 
 This stage regularly *catches the tool's own mistakes*: when an emitted expression wouldn't
 actually match (a name-from-content assumption on an `alert`, say), the count comes back 0 and
@@ -201,9 +204,14 @@ agents to scope accumulating UI with `.first()`/`.filter()` for exactly this rea
 
 Everything lands in one `SemanticExtract` JSON: `page_metadata` (title, final URL, timestamp,
 node and frame counts, `truncated`, and human-readable `notes` carrying every warning the
-pipeline generated) plus `interactive_nodes`. Properties that don't apply are `null`, never
-omitted — a stable shape downstream. The schema is versioned (`1.2`) and frozen: additive changes
-bump the minor, breaking changes would bump the major, and agents can rely on the shape.
+pipeline generated) plus `interactive_nodes`. Internally, properties that don't apply are
+`null`, never omitted, so diffing and tests reason about one fixed shape. **On the wire** (schema
+1.3, `src/compact.ts`) the same object is emitted as compact JSON with the empty parts left out:
+`null` fields, `frame_path: []`, `in_shadow: false`, `kind: "element"`, empty
+`fallback_locators`, and `text_content` when it equals `accessible_name`. Absent means
+null/false/empty; `is_visible` is always present. Measured on real pages this is about a third
+of the tokens for the same facts. The schema is versioned and frozen: additive changes bump the
+minor, breaking changes would bump the major, and agents can rely on the shape.
 
 Output size in practice: 92–97% smaller than the raw DOM of the same page, and byte-identical
 across repeated runs of an unchanged page — which is what makes two engineers start from the same

@@ -11,6 +11,35 @@ matching section.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-08
+
+Same facts, a third of the tokens. Measured on real v0.5 output a node cost
+300 to 385 tokens; most of it was indentation, `null` properties, fallback
+locators nobody uses when the primary is unique, and text repeated between
+`text_content` and `accessible_name`.
+
+### Changed
+
+- Schema 1.3 wire format. Results are emitted as compact JSON (no
+  indentation) and node fields are omitted when they carry no information:
+  a `null` field, `frame_path: []`, `in_shadow: false`, `kind: "element"`,
+  `fallback_locators: []`, and `text_content` equal to `accessible_name`.
+  Absent means null/false/empty. `is_visible` is always present. Diff
+  `changes` keep `null` from/to values, since there the null is the fact.
+  Internally the shape stays full and fixed; `src/compact.ts` applies the
+  rules once at the tool-result boundary.
+- Fallback locators appear only when the primary is not unique or is a
+  brittle strategy (css/id), capped at 2.
+- Locator verification stops at the first unique semantic candidate instead
+  of counting every candidate. Ambiguous nodes still run the whole chain, so
+  a unique css fallback and `.nth()` correlation remain available for them.
+  Cuts Playwright round trips from about one per candidate to about one per
+  node on well-labelled pages.
+- The diff identity rule and the wire rules are stated once, in the tool
+  descriptions and server instructions, instead of in every result's notes.
+- `npm run bench` measures the wire payload, not the pretty-printed internal
+  object.
+
 ## [0.5.1] - 2026-09-08
 
 Fixes from the first v0.5 run against a real dev environment (guest
@@ -148,7 +177,8 @@ Initial public release on npm.
 - Parallel locator verification, bounded concurrency, document order kept.
 - Release workflow: pushing a `v*` tag publishes to npm.
 
-[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.3.2...v0.4.0

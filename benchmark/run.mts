@@ -25,6 +25,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { extractSemanticDom, closeBrowser } from "../src/browser.js";
+import { compactForWire } from "../src/compact.js";
 import type { SemanticExtract } from "../src/types.js";
 
 const urls = process.argv.slice(2);
@@ -104,7 +105,7 @@ for (const url of urls) {
   const labels = (process.env.QA_BENCH_LABELS ?? "").split(",").map((s) => s.trim());
   const label = labels[urls.indexOf(url)] || first.page_metadata.title;
 
-  const json = JSON.stringify(first, null, 2); // pretty JSON = the actual tool payload
+  const json = JSON.stringify(compactForWire(first)); // schema 1.3 wire = the actual tool payload
   const deterministic =
     JSON.stringify(stripVolatile(first)) === JSON.stringify(stripVolatile(second));
 

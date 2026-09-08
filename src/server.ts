@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { checkAuth, extractAfterActions, extractSemanticDom, listFrames, ExtractError } from "./browser.js";
 import { renderWritePlaywrightTestPrompt, TEAM_CONVENTIONS } from "./conventions.js";
+import { compactForWire } from "./compact.js";
 import { redactString } from "./secrets.js";
 import { actInSession, closeSession, extractInSession, listSessions, openSession } from "./session.js";
 
@@ -161,9 +162,13 @@ type ToolResult = {
   isError?: boolean;
 };
 
-/** Every string that leaves the server passes through secret redaction. */
+/**
+ * Every result leaves the server compacted (schema 1.3 wire rules, no
+ * indentation) and with secrets redacted. Indentation alone was a third of
+ * the tokens; the wire rules take most of the rest.
+ */
 function jsonResult(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: redactString(JSON.stringify(value, null, 2)) }] };
+  return { content: [{ type: "text", text: redactString(JSON.stringify(compactForWire(value))) }] };
 }
 
 /** Structured error in content so the agent can react, not crash. */
@@ -188,6 +193,8 @@ function guarded<A>(name: string, fn: (args: A) => Promise<unknown>): (args: A) 
 }
 
 const SERVER_INSTRUCTIONS =
+  "Output is compact JSON (schema 1.3): a node field that is absent is null/false/empty (no frame_path = main " +
+  "document, no fallback_locators = the primary is unique). " +
   "Always extract before writing a Playwright test; never author locators from memory — use only the " +
   "`playwright` expressions returned by an extraction. Single page: `extract_semantic_dom`. " +
   "Multi-step flow (login → cart → checkout): `session_open`, then alternate `session_act` (declared " +
@@ -199,7 +206,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.5.1" },
+    { name: "semantic-dom-mcp", version: "0.6.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -299,7 +306,9 @@ export function createServer(): McpServer {
         "plus `snapshot_id`). Pass `diff_against: 'previous'` (or a snapshot_id) to receive only what changed: " +
         "added nodes (new toasts/dialogs/fields), removed nodes, changed properties (value, is_disabled, " +
         "aria_invalid, described_by…) and the behavior observed in between — far smaller than a full " +
-        "re-extraction and exactly the assertion list for the step.",
+        "re-extraction and exactly the assertion list for the step. Diff identity: frame + test-id, else id, " +
+        "else placeholder, else tag+role+accessible name (+ document-order index); a renamed node with no stable " +
+        "attribute shows as removed + added; primary_locator.playwright changes say which locator is valid in which state.",
       inputSchema: sessionExtractInputSchema,
       annotations: READS_CONSUMES,
     },

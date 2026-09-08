@@ -46,13 +46,11 @@ describe("locator quality (v0.3)", () => {
     expect(radix.primary_locator.strategy).toBe("role");
     expect(radix.context_note).toMatch(/framework-generated/);
 
-    // A human-authored id is still a legitimate fallback strategy.
+    // A human-authored id gets no note; the unique role primary ends
+    // verification before the id candidate is ever counted.
     const email = extract.interactive_nodes.find((n) => n.tag === "input" && n.accessible_name === "Email")!;
-    expect(
-      [email.primary_locator, ...email.fallback_locators].some(
-        (l) => l.strategy === "id" && l.playwright === "locator('#user-email')",
-      ),
-    ).toBe(true);
+    expect(email.primary_locator).toMatchObject({ strategy: "role", is_unique: true });
+    expect(email.fallback_locators).toEqual([]);
     expect(email.context_note).toBeUndefined();
   });
 
@@ -68,9 +66,9 @@ describe("locator quality (v0.3)", () => {
     const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/slim`)));
 
     const name = nodeByTestId(extract, "input-name");
-    expect(name.fallback_locators.length).toBeLessThanOrEqual(4);
-    // structural css dropped — a unique test-id primary makes it dead weight
-    expect(name.fallback_locators.every((l) => !l.playwright.includes("nth-child"))).toBe(true);
+    // Verification stops at the first unique semantic candidate: a unique
+    // test-id primary means no further counts and no fallbacks at all.
+    expect(name.fallback_locators).toEqual([]);
 
     // ...but ambiguous nodes KEEP the structural css fallback (it is the only
     // unique option and feeds .nth correlation).

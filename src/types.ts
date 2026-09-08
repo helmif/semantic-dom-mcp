@@ -141,7 +141,13 @@ export interface Observed {
 }
 
 export interface SemanticExtract {
-  schema_version: "1.2";       // 1.2 adds assertable properties, `observed`, and `snapshot_id` (additive)
+  /**
+   * 1.2 added assertable properties, `observed`, `snapshot_id`.
+   * 1.3 changes the WIRE shape only (see compact.ts): null and default-valued
+   * node fields are omitted, fallbacks appear only when needed. Internally
+   * the shape stays full and fixed.
+   */
+  schema_version: "1.3";
   page_metadata: PageMetadata;
   interactive_nodes: InteractiveNode[];
   /**
@@ -178,7 +184,7 @@ export interface ChangedNode {
 }
 
 export interface SemanticDiff {
-  schema_version: "1.2";
+  schema_version: "1.3";
   kind: "diff";
   from_snapshot: number;
   to_snapshot: number;

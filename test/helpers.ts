@@ -124,7 +124,7 @@ const nodeSchema = z
 
 export const semanticExtractSchema = z
   .object({
-    schema_version: z.literal("1.2"),
+    schema_version: z.literal("1.3"),
     page_metadata: z
       .object({
         title: z.string(),
@@ -144,7 +144,7 @@ export const semanticExtractSchema = z
 
 export const semanticDiffSchema = z
   .object({
-    schema_version: z.literal("1.2"),
+    schema_version: z.literal("1.3"),
     kind: z.literal("diff"),
     from_snapshot: z.number().int().positive(),
     to_snapshot: z.number().int().positive(),

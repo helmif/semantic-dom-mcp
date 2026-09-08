@@ -83,6 +83,28 @@ The home page number is the token problem in plain sight: about 330 tokens
 per node, most of it nulls, indentation, redundant fallbacks and duplicated
 text. Compact output is the v0.6 priority; see the roadmap.
 
+## v0.6 wire format: before and after on the same dev environment (2026-09-08)
+
+Same pages, same flow, same day. Before = 0.5.1 (pretty-printed JSON, every
+candidate verified). After = 0.6.0 (schema 1.3 wire rules, verification stops
+at the first unique candidate). Token counts estimated at 4 chars/token.
+
+| Payload | 0.5.1 | 0.6.0 | Change |
+| --- | ---: | ---: | ---: |
+| Home page, `extract_semantic_dom` (`npm run bench`, 10 nodes) | 12,385 ch | 5,236 ch | −58% |
+| Product page, `extract_semantic_dom` (14 nodes) | 15,032 ch | 4,664 ch | −69% |
+| Home page after settle, session snapshot with click targets (68 nodes) | ~22,600 tok | ~11,000 tok | −51% |
+| Product page, session snapshot (36 nodes) | ~11,200 tok | ~4,900 tok | −56% |
+| Diff after the add-to-cart click | ~4,100 tok | ~1,400 tok | −66% |
+| Whole guest add-to-cart flow (8 calls) | ~39,200 tok | ~18,300 tok | −53% |
+
+Locator output is unchanged: the same primaries, the same `is_unique`
+verdicts, the same `.nth()` guidance; the diff after the click reports the
+same 11 added and 2 changed nodes. Extraction wall time on these pages is
+dominated by the `networkidle` wait (about 3 s home, 2 s product), so the
+fewer verification round trips do not show here; they matter on pages with
+hundreds of nodes.
+
 ## Reproduce
 
 ```bash

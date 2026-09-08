@@ -110,14 +110,10 @@ export function diffExtracts(before: SemanticExtract, after: SemanticExtract): S
   if (before.page_metadata.truncated || after.page_metadata.truncated) {
     notes.push("At least one snapshot was truncated; nodes past the cap cannot be compared.");
   }
-  notes.push(
-    "Identity: frame_path + test-id, else id, else placeholder, else tag+role+accessible name (+ document-order index). " +
-      "A node whose accessible name changed with no stable attribute appears as removed + added. " +
-      "primary_locator.playwright changes are listed so you know which locator is valid in which state.",
-  );
+  // The identity rule itself is documented once, in the session_extract tool description.
 
   return {
-    schema_version: "1.2",
+    schema_version: "1.3",
     kind: "diff",
     from_snapshot: before.snapshot_id ?? 0,
     to_snapshot: after.snapshot_id ?? 0,

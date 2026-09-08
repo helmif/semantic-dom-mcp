@@ -389,7 +389,7 @@ export async function snapshotPage(
     }
 
     return redactDeep<SemanticExtract>({
-      schema_version: "1.2",
+      schema_version: "1.3",
       page_metadata: {
         title: await page.title(),
         url: page.url(),

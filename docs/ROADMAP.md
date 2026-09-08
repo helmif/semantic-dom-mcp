@@ -44,11 +44,12 @@ only tracks what is next.
 
 ## Next
 
+- **Progressive disclosure**: `extract_outline` (landmarks, forms, dialogs
+  with counts) then scoped extraction (`scope`, `roles`, `visible_only`);
+  `output: "file"` for large pages.
 - **Locator verification** (`verify_locators` / spec lint): count every
   `getBy*` / `locator()` in a written spec against the live page; doubles as
   drift detection in CI against committed extracts.
-- **Progressive disclosure**: `extract_outline` (landmarks, forms, dialogs
-  with counts) then scoped extraction; `output: "file"` for large pages.
 - **Page object generation** from an extraction, with stable property names.
 - **Conventions as a skill** (`SKILL.md` / `AGENTS.md`) plus a
   `get_conventions` tool, for clients that surface MCP prompts poorly.

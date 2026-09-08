@@ -605,7 +605,7 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
     }
     cand.note =
       (cand.note ? cand.note + " " : "") +
-      "Included via the opt-in cursor:pointer click-target heuristic; the element has no native interactive semantics (consider adding a role or data-testid).";
+      "Opt-in click-target heuristic (cursor:pointer, no role/test-id); consider adding a role or data-testid.";
   }
   var node: RawNode = {
     kind: "element",

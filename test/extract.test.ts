@@ -139,26 +139,36 @@ describe("locator derivation", () => {
     expect(btn.primary_locator.is_unique).toBe(true);
   });
 
-  it("prefers test-id and orders fallbacks label > placeholder > id", async () => {
+  it("prefers test-id, stops verifying at the first unique candidate, and keeps priority order when it must continue", async () => {
     fx.route(
       "/priority",
       htmlPage(`
         <label for="user-email-field">Email address</label>
-        <input id="user-email-field" data-testid="input-email" type="email" placeholder="Enter your email">`),
+        <input id="user-email-field" data-testid="input-email" type="email" placeholder="Enter your email">
+        <form id="a"><input data-testid="dup" aria-label="Kode" placeholder="Kode promo"></form>
+        <form id="b"><input data-testid="dup" aria-label="Kode" placeholder="Kode promo" id="promo-b"></form>`),
     );
     const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/priority`)));
+    // A unique test-id is the primary and ends verification: no fallbacks.
     const node = nodeByTestId(extract, "input-email");
-    expect(node.primary_locator).toMatchObject({
-      strategy: "test-id",
-      playwright: "getByTestId('input-email')",
-      is_unique: true,
-    });
-    const strategies = node.fallback_locators.map((l) => l.strategy);
-    expect(strategies.indexOf("label")).toBeLessThan(strategies.indexOf("placeholder"));
-    expect(strategies.indexOf("placeholder")).toBeLessThan(strategies.indexOf("id"));
-    expect(node.fallback_locators.find((l) => l.strategy === "id")!.playwright).toBe(
-      "locator('#user-email-field')",
-    );
+    expect(node.primary_locator).toMatchObject({ strategy: "test-id", playwright: "getByTestId('input-email')", is_unique: true });
+    expect(node.fallback_locators).toEqual([]);
+
+    // Ambiguous test-id: verification continues down the priority chain
+    // (test-id > role > label > placeholder > id > css) until a unique one turns up.
+    const dups = extract.interactive_nodes.filter((n) => n.tag === "input" && n.accessible_name === "Kode");
+    expect(dups).toHaveLength(2);
+    // First field: nothing semantic is unique, so the chain runs to the end and
+    // the ambiguous test-id stays primary with .nth guidance; css is kept as
+    // the only unique option.
+    const first = dups.find((n) => n.primary_locator.strategy === "test-id")!;
+    expect(first.primary_locator).toMatchObject({ is_unique: false, disambiguation: expect.stringMatching(/use \.nth\(0\)/) });
+    expect([first.primary_locator, ...first.fallback_locators].map((l) => l.strategy)).toEqual(["test-id", "role", "label", "placeholder", "css"]);
+    // Second field: its human-authored id is the first unique candidate, so it
+    // becomes the primary and verification stops there (css never counted).
+    const second = dups.find((n) => n.primary_locator.strategy === "id")!;
+    expect(second.primary_locator).toMatchObject({ playwright: "locator('#promo-b')", is_unique: true });
+    expect(second.fallback_locators.map((l) => l.strategy)).toEqual(["test-id", "role", "label", "placeholder"]);
   });
 
   it("flags ambiguous locators with is_unique:false and disambiguation guidance", async () => {
