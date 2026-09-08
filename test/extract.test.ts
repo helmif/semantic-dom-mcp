@@ -184,14 +184,17 @@ describe("locator derivation", () => {
       (n) => n.tag === "button" && n.accessible_name === "Save",
     );
     expect(saves).toHaveLength(2);
-    for (const save of saves) {
-      expect(save.primary_locator.strategy).toBe("role"); // structural css never wins primary
-      expect(save.primary_locator.is_unique).toBe(false);
-      expect(save.primary_locator.disambiguation).toBeDefined();
-    }
+    // First button: nothing scopes it, so the ambiguous role locator stays
+    // primary with .nth guidance (structural css never wins primary).
+    expect(saves[0]!.primary_locator).toMatchObject({ strategy: "role", is_unique: false });
     expect(saves[0]!.primary_locator.disambiguation).toContain(".nth(0)");
-    expect(saves[1]!.primary_locator.disambiguation).toContain(".nth(1)");
-    expect(saves[1]!.primary_locator.disambiguation).toContain("getByTestId('card-2')");
+    // Second button: its test-id container scopes it to a unique locator.
+    expect(saves[1]!.primary_locator).toMatchObject({
+      strategy: "role",
+      playwright: "getByTestId('card-2').getByRole('button', { name: 'Save' })",
+      is_unique: true,
+      within: { kind: "test-id", value: "card-2" },
+    });
   });
 });
 

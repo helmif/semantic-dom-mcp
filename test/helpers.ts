@@ -63,6 +63,7 @@ const locatorSchema = z
     playwright: z.string().min(1),
     is_unique: z.boolean(),
     disambiguation: z.string().optional(),
+    within: z.object({ kind: z.enum(["row", "listitem", "test-id"]), value: z.string().min(1) }).strict().optional(),
   })
   .strict();
 
@@ -127,7 +128,7 @@ const nodeSchema = z
 
 export const semanticExtractSchema = z
   .object({
-    schema_version: z.literal("1.3"),
+    schema_version: z.literal("1.4"),
     page_metadata: z
       .object({
         title: z.string(),
@@ -147,7 +148,7 @@ export const semanticExtractSchema = z
 
 export const semanticDiffSchema = z
   .object({
-    schema_version: z.literal("1.3"),
+    schema_version: z.literal("1.4"),
     kind: z.literal("diff"),
     from_snapshot: z.number().int().positive(),
     to_snapshot: z.number().int().positive(),

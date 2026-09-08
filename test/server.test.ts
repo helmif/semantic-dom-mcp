@@ -48,7 +48,7 @@ describe("MCP wire format (schema 1.3)", () => {
     expect(text).not.toMatch(/:null[,}]/); // no null node fields on the wire
     expect(text).not.toContain('"identity"'); // internal only
     const doc = JSON.parse(text) as { schema_version: string; interactive_nodes: Array<Record<string, unknown>> };
-    expect(doc.schema_version).toBe("1.3");
+    expect(doc.schema_version).toBe("1.4");
     const email = doc.interactive_nodes.find((n) => (n.primary_locator as { playwright: string }).playwright === "getByTestId('email')")!;
     expect(email).not.toHaveProperty("kind");
     expect(email).not.toHaveProperty("frame_path");

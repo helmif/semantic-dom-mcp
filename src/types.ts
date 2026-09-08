@@ -3,11 +3,23 @@ export type NodeKind = "element" | "shadow_boundary" | "cross_origin_frame";
 export type LocatorStrategy =
   | "test-id" | "role" | "label" | "placeholder" | "text" | "id" | "css";
 
+/**
+ * Container a locator is scoped to (schema 1.4). Rendered as
+ * getByRole('row', { name }) / getByRole('listitem').filter({ hasText }) /
+ * getByTestId(value), followed by the inner locator. Copy it into an action
+ * locator's `within` to act on the same element.
+ */
+export interface LocatorScope {
+  kind: "row" | "listitem" | "test-id";
+  value: string;
+}
+
 export interface Locator {
   strategy: LocatorStrategy;
   playwright: string;          // ready-to-paste Playwright expression
   is_unique: boolean;          // matches exactly one element in its frame
   disambiguation?: string;     // present only when is_unique is false
+  within?: LocatorScope;       // present when the expression is scoped to a container
 }
 
 /** One <option> of a <select> (schema 1.2). */
@@ -148,8 +160,9 @@ export interface SemanticExtract {
    * 1.3 changes the WIRE shape only (see compact.ts): null and default-valued
    * node fields are omitted, fallbacks appear only when needed. Internally
    * the shape stays full and fixed.
+   * 1.4 adds Locator.within (scoped locators).
    */
-  schema_version: "1.3";
+  schema_version: "1.4";
   page_metadata: PageMetadata;
   interactive_nodes: InteractiveNode[];
   /**
@@ -186,7 +199,7 @@ export interface ChangedNode {
 }
 
 export interface SemanticDiff {
-  schema_version: "1.3";
+  schema_version: "1.4";
   kind: "diff";
   from_snapshot: number;
   to_snapshot: number;

@@ -116,7 +116,7 @@ export function diffExtracts(before: SemanticExtract, after: SemanticExtract): S
   // The identity rule itself is documented once, in the session_extract tool description.
 
   return {
-    schema_version: "1.3",
+    schema_version: "1.4",
     kind: "diff",
     from_snapshot: before.snapshot_id ?? 0,
     to_snapshot: after.snapshot_id ?? 0,

@@ -11,6 +11,36 @@ matching section.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-08
+
+Scoped locators, from the first authenticated run against a real seller
+dashboard: a variant table whose custom radios have no name and whose
+quantity fields all share `placeholder="0"`, a buyer picker with five
+identical buttons, and a cart whose checkboxes live inside test-id
+containers.
+
+### Added
+
+- Schema 1.4: `Locator.within` (`{ kind: "row" | "listitem" | "test-id",
+  value }`). The in-page engine finds the nearest scoping container (a
+  test-id ancestor, a table row, a list item) and emits scoped variants of
+  the semantic candidates after the unscoped ones: a nameless control gets
+  a bare role inside its container (`getByRole('row', { name: 'Charizard'
+  }).getByRole('radio')`), a repeated one gets disambiguated
+  (`getByRole('row', { name: 'Charizard' }).getByPlaceholder('0')`,
+  `getByRole('listitem').filter({ hasText: 'Puthera' }).getByRole('button',
+  { name: 'Pilih Pembeli Ini' })`, `getByTestId('customer-checkbox-flex')
+  .getByRole('checkbox')`). All verified by Playwright's own count like
+  every other locator. Declared action locators accept the same `within`.
+- Icon-only controls are named from `<svg aria-label>` or `<svg><title>`.
+- `benchmark/FLOW-VALIDATION.md`: authenticated add-to-cart run, generated
+  test green on the live dev site.
+
+### Changed
+
+- A textless `<label>` wrapping a control is no longer extracted as a node
+  of its own (component-library checkbox chrome).
+
 ## [0.6.1] - 2026-09-08
 
 Audit release: three independent review angles over everything since 0.5.0
@@ -229,7 +259,8 @@ Initial public release on npm.
 - Parallel locator verification, bounded concurrency, document order kept.
 - Release workflow: pushing a `v*` tag publishes to npm.
 
-[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.0...v0.5.1

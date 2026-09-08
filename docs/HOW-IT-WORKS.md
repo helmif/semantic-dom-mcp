@@ -165,7 +165,22 @@ exists; and when a notification live region is *empty* (many toast libraries ren
 in a sibling), the message text is pulled from the enclosing container and flagged — so the toast
 copy is assertable.
 
-### 5.5 What the engine emits: candidates, not strings
+### 5.5 Scoping: the container a control lives in
+
+A custom radio in a variant table has no name of its own; the name is in the next cell. Five
+"Pilih Pembeli Ini" buttons are identical; what differs is the buyer card around each. A QA
+engineer writes those locators by scoping: `getByRole('row', { name: 'Charizard' })
+.getByRole('radio')`, `getByRole('listitem').filter({ hasText: 'Puthera' }).getByRole('button', {
+name: 'Pilih Pembeli Ini' })`, `getByTestId('customer-checkbox-flex').getByRole('checkbox')`. The
+engine does the same (v0.7): for each element it finds the nearest scoping container, a test-id
+ancestor first (stable), else a table row (Playwright names rows from their content, and the
+first short cell is used as a substring name), else a list item (filtered by its first short
+text). It then emits scoped variants of the semantic candidates after the unscoped ones, plus a
+bare scoped role for a control with no name at all. A unique unscoped locator still wins;
+structure stays last. The node carries `within` so a declared action can address the same
+element, and the expression is counted by Playwright like any other.
+
+### 5.6 What the engine emits: candidates, not strings
 
 For each node, the in-page engine emits locator **candidate data** — `(strategy, value, role)`
 tuples in the team-priority order: test-id → role+name → label → placeholder → text → id →

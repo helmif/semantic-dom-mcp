@@ -133,7 +133,8 @@ cart, go to checkout, and write the test."* The agent's calls look like:
 
 Action types: `fill`, `click`, `press`, `select` (choose a `<select>`
 option), `goto` (navigate within the allowlist; absolute URL), `wait`. Max 20
-per call. Add `secret: true` to a `fill` whose value must never appear in any
+per call. When a node's locator carries `within` (scoped to a row, list
+item or test-id container), pass the same `within` in the action locator. Add `secret: true` to a `fill` whose value must never appear in any
 output (password fields are detected automatically).
 
 Rules the server enforces: a session that leaves the allowlisted hosts is

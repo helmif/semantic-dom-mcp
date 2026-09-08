@@ -57,8 +57,13 @@ const actionLocatorSchema = z
     strategy: z
       .enum(["test-id", "role", "label", "placeholder", "text", "id", "css"])
       .describe("Locator strategy, matching the strategies in extraction output."),
-    value: z.string().min(1).describe("The locator value (test id, accessible name, label, selector...)."),
+    value: z.string().describe("The locator value (test id, accessible name, label, selector...). Empty for a bare role inside `within`."),
     role: z.string().optional().describe("ARIA role — required when strategy is 'role'."),
+    within: z
+      .object({ kind: z.enum(["row", "listitem", "test-id"]), value: z.string().min(1) })
+      .strict()
+      .optional()
+      .describe("Scope to a container first; copy the extraction's `within` verbatim."),
     nth: z
       .number()
       .int()
@@ -194,7 +199,9 @@ function guarded<A>(name: string, fn: (args: A) => Promise<unknown>): (args: A) 
 }
 
 const SERVER_INSTRUCTIONS =
-  "Output is compact JSON (schema 1.3). An absent node property is null (not applicable; never read it as false). " +
+  "Output is compact JSON (schema 1.4). An absent node property is null (not applicable; never read it as false). " +
+  "A locator with `within` is scoped to a container (a table row by name, a list item by text, or a test-id " +
+  "ancestor); its `playwright` expression is complete, and an action locator takes the same `within` verbatim. " +
   "Absent frame_path = main document, absent in_shadow = light DOM, absent fallback_locators = nothing worth " +
   "listing (rely on primary_locator.is_unique). " +
   "Always extract before writing a Playwright test; never author locators from memory — use only the " +
@@ -208,7 +215,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.6.1" },
+    { name: "semantic-dom-mcp", version: "0.7.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 

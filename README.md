@@ -77,7 +77,7 @@ from the agent's memory.
 | Tool | `extract_semantic_dom` | Extract a URL into Semantic JSON (`url`, `wait_for` default `auto` = load then settled, `wait_selector`, `include_hidden`, `max_nodes`, `viewport`, `include_click_targets`). Read-only, never touches the page. |
 | Tool | `extract_semantic_dom_after` | Same, but first runs a short **declared** action list (fill/click/press/select/goto/wait, max 20) in the main frame and snapshots the resulting state, plus an `observed` block of what the page did meanwhile. Refuses to extract if the actions navigated off the allowlist. |
 | Tool | `session_open` | Open a persistent page for a multi-step flow (`url`, `wait_for`, `wait_selector`, `viewport`). Returns a `session_id`. Sessions are capped and expire when idle. |
-| Tool | `session_act` | Run declared actions in an open session. Returns the resulting URL/title and `observed`: main-frame navigations, xhr/fetch requests (method, path, status), console errors, dialogs (dismissed), popups (closed). |
+| Tool | `session_act` | Run declared actions in an open session (action locators accept the extraction's `within`). Returns the resulting URL/title and `observed`: main-frame navigations, xhr/fetch requests (method, path, status), console errors, dialogs (dismissed), popups (closed). |
 | Tool | `session_extract` | Snapshot the session's current state (`snapshot_id` included). With `diff_against` (a snapshot id or `"previous"`) returns a **diff**: added, removed, changed nodes and the behavior observed in between. |
 | Tool | `session_close` | Release the session's browser context. |
 | Tool | `session_list` | Diagnostic: open sessions with URL, expiry and counts. |
@@ -126,6 +126,12 @@ ones.
   `is_disabled: true` with a note. The conventions instruct the model to write the interactions
   that change state, not to assume it stays disabled. In a session, the diff shows the transition
   itself (`is_disabled: false → true`), so the test asserts a fact rather than an assumption.
+- **Scoped locators (schema 1.4):** a nameless or repeated control is located inside its
+  container the way a QA engineer writes it by hand: `getByRole('row', { name: 'Charizard'
+  }).getByRole('radio')`, `getByRole('listitem').filter({ hasText: 'Puthera' }).getByRole('button',
+  { name: 'Pilih Pembeli Ini' })`, `getByTestId('customer-checkbox-flex').getByRole('checkbox')`.
+  The node carries `within` so an action can target the same element; the expression is verified
+  unique by Playwright like every other locator.
 - **Compact wire format (schema 1.3):** results are compact JSON and a node field that carries no
   information is omitted: `null` fields, `frame_path: []`, `in_shadow: false`, `kind: "element"`,
   empty `fallback_locators`, and `text_content` equal to `accessible_name`. An absent property is

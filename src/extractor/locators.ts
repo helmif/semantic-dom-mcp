@@ -23,7 +23,34 @@ function idSelector(id: string): string {
   return /^[A-Za-z][\w-]*$/.test(id) ? `#${id}` : `[id="${id.replace(/"/g, '\\"')}"]`;
 }
 
+function scopeExpression(s: NonNullable<RawLocatorCandidate["within"]>): string {
+  switch (s.kind) {
+    case "row":
+      return `getByRole('row', { name: ${q(s.value)} })`;
+    case "listitem":
+      return `getByRole('listitem').filter({ hasText: ${q(s.value)} })`;
+    case "test-id":
+      return `getByTestId(${q(s.value)})`;
+  }
+}
+
+function scopePwLocator(frame: Frame, s: NonNullable<RawLocatorCandidate["within"]>): PwLocator {
+  switch (s.kind) {
+    case "row":
+      return frame.getByRole("row", { name: s.value });
+    case "listitem":
+      return frame.getByRole("listitem").filter({ hasText: s.value });
+    case "test-id":
+      return frame.getByTestId(s.value);
+  }
+}
+
 export function buildExpression(c: RawLocatorCandidate): string {
+  const inner = buildInnerExpression(c);
+  return c.within ? `${scopeExpression(c.within)}.${inner}` : inner;
+}
+
+function buildInnerExpression(c: RawLocatorCandidate): string {
   switch (c.strategy) {
     case "test-id":
       return `getByTestId(${q(c.value)})`;
@@ -45,25 +72,27 @@ export function buildExpression(c: RawLocatorCandidate): string {
 }
 
 export function buildPwLocator(frame: Frame, c: RawLocatorCandidate): PwLocator {
+  // Frame and Locator share the getBy* surface; a scope narrows the root.
+  const root: Frame | PwLocator = c.within ? scopePwLocator(frame, c.within) : frame;
   switch (c.strategy) {
     case "test-id":
-      return frame.getByTestId(c.value);
+      return root.getByTestId(c.value);
     case "role":
       // The page may carry any role string; Playwright types restrict to known
       // ARIA roles. Unknown roles throw at count() time and are handled there.
       return c.value === ""
-        ? frame.getByRole((c.role ?? "") as Parameters<Frame["getByRole"]>[0])
-        : frame.getByRole((c.role ?? "") as Parameters<Frame["getByRole"]>[0], { name: c.value });
+        ? root.getByRole((c.role ?? "") as Parameters<Frame["getByRole"]>[0])
+        : root.getByRole((c.role ?? "") as Parameters<Frame["getByRole"]>[0], { name: c.value });
     case "label":
-      return frame.getByLabel(c.value);
+      return root.getByLabel(c.value);
     case "placeholder":
-      return frame.getByPlaceholder(c.value);
+      return root.getByPlaceholder(c.value);
     case "text":
-      return frame.getByText(c.value);
+      return root.getByText(c.value);
     case "id":
-      return frame.locator(idSelector(c.value));
+      return root.locator(idSelector(c.value));
     case "css":
-      return frame.locator(c.value);
+      return root.locator(c.value);
   }
 }
 
@@ -71,7 +100,7 @@ export function buildPwLocator(frame: Frame, c: RawLocatorCandidate): PwLocator 
 export type CountCache = Map<string, number>;
 
 async function countMatches(frame: Frame, c: RawLocatorCandidate, cache: CountCache): Promise<number | null> {
-  const key = `${c.strategy}|${c.role ?? ""}|${c.value}`;
+  const key = `${c.within ? `${c.within.kind}:${c.within.value}>` : ""}${c.strategy}|${c.role ?? ""}|${c.value}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
   let count: number | null;
@@ -140,6 +169,7 @@ export async function resolveLocators(frame: Frame, raw: RawNode, cache: CountCa
         strategy: candidate.strategy,
         playwright: buildExpression(candidate),
         is_unique: count === 1,
+        ...(candidate.within ? { within: { kind: candidate.within.kind, value: candidate.within.value } } : {}),
       },
       candidate,
     });
@@ -169,7 +199,8 @@ export async function resolveLocators(frame: Frame, raw: RawNode, cache: CountCa
   const primary = pool[firstUnique >= 0 ? firstUnique : 0]!;
 
   if (!primary.locator.is_unique) {
-    const count = cache.get(`${primary.candidate.strategy}|${primary.candidate.role ?? ""}|${primary.candidate.value}`);
+    const pc = primary.candidate;
+    const count = cache.get(`${pc.within ? `${pc.within.kind}:${pc.within.value}>` : ""}${pc.strategy}|${pc.role ?? ""}|${pc.value}`);
     const nth = await findNthIndex(frame, primary.candidate, raw.css_path);
     const hints: string[] = [];
     if (nth !== null) hints.push(`use .nth(${nth})`);

@@ -10,7 +10,9 @@ export const DEFAULT_TEAM_NAME = process.env.QA_MCP_TEAM_NAME ?? "QA";
 export const TEAM_CONVENTIONS = `TEAM CONVENTIONS (non-negotiable):
 - Locators: use ONLY the \`playwright\` expression from each node. Prefer
   primary_locator; use a fallback only if primary.is_unique is false or the
-  primary is unusable, and add a comment stating why. Absent fields: a
+  primary is unusable, and add a comment stating why. A locator with
+  \`within\` is already scoped to its row / list item / test-id container;
+  paste the whole expression, do not re-scope it. Absent fields: a
   property that is absent is null (not applicable; never assume false);
   absent frame_path/in_shadow/fallback_locators mean main document / light
   DOM / nothing worth listing.

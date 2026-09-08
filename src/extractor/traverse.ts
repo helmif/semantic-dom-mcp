@@ -17,11 +17,18 @@
  */
 
 /** Candidate locator data gathered in-page; expressions are built server-side. */
+export interface RawScope {
+  kind: "row" | "listitem" | "test-id";
+  value: string;
+}
+
 export interface RawLocatorCandidate {
   strategy: "test-id" | "role" | "label" | "placeholder" | "text" | "id" | "css";
   value: string;
   /** Only for strategy "role". */
   role?: string;
+  /** Container to scope the expression to (row / list item / test-id ancestor). */
+  within?: RawScope;
   /**
    * Structural-CSS-path candidates are brittle and may only become the
    * primary locator when NO other candidate exists (css is the last
@@ -221,6 +228,15 @@ export function __qaAccessibleName(el: Element): string | null {
     var imgAlt = __qaCollapse(img.getAttribute("alt"));
     if (imgAlt) return imgAlt;
   }
+  // Inline icons: <svg aria-label> or <svg><title> is the accessible text.
+  var svg = el.querySelector ? el.querySelector("svg") : null;
+  if (svg) {
+    var svgLabel = __qaCollapse(svg.getAttribute("aria-label"));
+    if (svgLabel) return svgLabel;
+    var title = svg.querySelector("title");
+    var svgTitle = title ? __qaCollapse(title.textContent) : "";
+    if (svgTitle) return svgTitle;
+  }
   return null;
 }
 
@@ -300,8 +316,11 @@ export function __qaShouldInclude(el: Element, role: string | null): boolean {
   if (__qaTestAttr(el)) return true;
   var tag = el.tagName.toLowerCase();
   var nativeInteractive =
-    tag === "input" || tag === "button" || tag === "a" || tag === "select" || tag === "textarea" || tag === "label";
+    tag === "input" || tag === "button" || tag === "a" || tag === "select" || tag === "textarea";
   if (nativeInteractive) return true;
+  // A <label> is a control only when it carries text; a textless wrapper
+  // around a checkbox (component libraries) is the checkbox's chrome.
+  if (tag === "label") return !!__qaCollapse(el.textContent);
   var formAssociated = tag === "option" || tag === "fieldset" || tag === "output" || tag === "legend";
   if (el.id && (nativeInteractive || formAssociated)) return true;
   var roleList = [
@@ -590,6 +609,28 @@ export function __qaCandidates(
     if (text && text.length <= 80) out.push({ strategy: "text", value: text });
   }
 
+  // Scoped variants: the same semantic locators inside the nearest row, list
+  // item or test-id container. They rescue nameless controls (a bare
+  // getByRole('radio') inside its row) and disambiguate repeated ones (one
+  // quantity field per row). Placed after the unscoped candidates so a unique
+  // unscoped locator still wins, before id/css so structure stays last.
+  var scope = __qaScope(el);
+  if (scope) {
+    var semantic = out.filter(function (c) {
+      return c.strategy === "role" || c.strategy === "label" || c.strategy === "placeholder" || c.strategy === "text";
+    });
+    if (semantic.length === 0 && role && authorNamedOnly.indexOf(role) < 0) {
+      // Nameless control: bare role inside the container.
+      out.push({ strategy: "role", value: "", role: role, within: scope });
+    }
+    for (var si = 0; si < semantic.length; si++) {
+      var sc = semantic[si]!;
+      var scoped: RawLocatorCandidate = { strategy: sc.strategy, value: sc.value, within: scope };
+      if (sc.role !== undefined) scoped.role = sc.role;
+      out.push(scoped);
+    }
+  }
+
   if (el.id) {
     if (__qaIsGeneratedId(el.id)) {
       out.push({ strategy: "id", value: el.id, last_resort: true });
@@ -604,6 +645,44 @@ export function __qaCandidates(
   if (!inShadow && cssPath) out.push({ strategy: "css", value: cssPath, last_resort: true });
 
   return { candidates: out, note: noteParts.length > 0 ? noteParts.join(" ") : null };
+}
+
+/**
+ * Nearest container a locator can be scoped to, in preference order: a
+ * test-id ancestor (stable), a table row (Playwright names rows from their
+ * content), a list item (filtered by its text). The row/item text is the
+ * first short cell or child text, since name matching is a substring match.
+ */
+export function __qaScope(el: Element): RawScope | null {
+  var cur: Element | null = el.parentElement;
+  while (cur && cur !== document.body) {
+    var tid = cur.getAttribute("data-testid");
+    if (tid) return { kind: "test-id", value: tid };
+    var tag = cur.tagName.toLowerCase();
+    var role = cur.getAttribute("role");
+    if (tag === "tr" || role === "row") {
+      var rowText = __qaScopeText(cur, "td,th,[role=cell],[role=gridcell],[role=rowheader],[role=columnheader]");
+      if (rowText) return { kind: "row", value: rowText };
+    }
+    if (tag === "li" || role === "listitem") {
+      var itemText = __qaScopeText(cur, "*");
+      if (itemText) return { kind: "listitem", value: itemText };
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+/** First short, non-empty text among the container's parts; else its own text, capped. */
+export function __qaScopeText(container: Element, partSelector: string): string | null {
+  var parts = container.querySelectorAll(partSelector);
+  for (var i = 0; i < parts.length; i++) {
+    var t = __qaCollapse(parts[i]!.textContent);
+    if (t && t.length >= 2 && t.length <= 40) return t;
+  }
+  var own = __qaCollapse(container.textContent);
+  if (!own) return null;
+  return own.length > 40 ? own.slice(0, 40) : own;
 }
 
 export function __qaScopeHint(el: Element): string | null {

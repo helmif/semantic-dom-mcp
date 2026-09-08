@@ -83,6 +83,30 @@ The home page number is the token problem in plain sight: about 330 tokens
 per node, most of it nulls, indentation, redundant fallbacks and duplicated
 text. Compact output is the v0.6 priority; see the roadmap.
 
+## Third run: authenticated add-to-cart on the same dev environment (2026-09-08)
+
+With a Playwright storageState from a real seller login (`QA_MCP_STORAGE_STATE`;
+the file never enters the repo). Flow: product page → "Tambah ke Keranjang" →
+variant dialog (a table: one quantity field per variant) → quantity 1 →
+confirm → buyer picker (five identical "Pilih Pembeli Ini" buttons) → pick →
+success dialog → cart page.
+
+| Metric | Value |
+| --- | --- |
+| Generated test green against the live dev site, unmodified | 1 / 1 (first run, 4 s) |
+| Behavioral facts from `observed` | product API to await, `POST …/batch-carts/products` → 200 to await, cart list API |
+| State transitions from diffs | confirm button `is_disabled` true → false after entering a quantity; quantity `value` 0 → 1; dialogs added and removed per step |
+| Whole flow (12 calls, 5 snapshots) | ~22,700 est. tokens |
+
+What the run found in the tool, shipped as 0.7.0: nameless custom radios and
+repeated quantity fields inside a table, five identical buyer buttons, and
+cart checkboxes inside test-id containers all came out as structural CSS or
+ambiguous. Scoped locators fix that: the quantity field is now
+`getByRole('row', { name: 'Charizard' }).getByPlaceholder('0')`, verified
+unique on the real table, and the generated test uses it. Controls in plain
+`<div>` cards with no row, list item or test-id ancestor keep `.nth()`
+guidance; there is nothing factual to scope them by.
+
 ## v0.6 wire format: before and after on the same dev environment (2026-09-08)
 
 Same pages, same flow, same day. Before = 0.5.1 (pretty-printed JSON, every

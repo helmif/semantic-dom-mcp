@@ -555,7 +555,7 @@ export async function snapshotPage(
     }
 
     const extract = redactDeep<SemanticExtract>({
-      schema_version: "1.3",
+      schema_version: "1.4",
       page_metadata: {
         title: await pageTitle(page),
         url: page.url(),
@@ -600,6 +600,8 @@ export interface ActionLocator {
   role?: string;
   /** Apply .nth(i) — use the index from a prior extraction's disambiguation. */
   nth?: number;
+  /** Scope to a container first, as given by the extraction's `within`. */
+  within?: { kind: "row" | "listitem" | "test-id"; value: string } | undefined;
 }
 
 export type PageAction =
@@ -659,6 +661,7 @@ function actionTarget(page: Page, loc: ActionLocator) {
     strategy: loc.strategy,
     value: loc.value,
     ...(loc.role !== undefined ? { role: loc.role } : {}),
+    ...(loc.within ? { within: loc.within } : {}),
   });
   if (loc.nth !== undefined) target = target.nth(loc.nth);
   return target;
