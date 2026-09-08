@@ -11,6 +11,58 @@ matching section.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-08
+
+Audit release: three independent review angles over everything since 0.5.0
+plus live probes against a real dev environment. Every item below has a
+regression test.
+
+### Changed
+
+- `wait_for` default is now `auto`: `load`, then no xhr/fetch request in
+  flight and no DOM mutation for 500 ms (bounded at 6 s). The tracker is
+  attached before navigation so a data request fired during parsing counts.
+  On a real dev site the previous default (`networkidle`) timed out after
+  30 s because analytics never let the network go idle, and `load` returned
+  an empty shell. `goto` actions settle the same way.
+- Accessible names follow accname precedence: `aria-labelledby`, then
+  `aria-label`, then the associated `<label>`, then content. `getByLabel`
+  candidates use the same order (Playwright's), and are skipped when they
+  would duplicate the role locator's name.
+- `action_failed` messages carry the reason from Playwright's call log
+  (`intercepts pointer events`, `not visible`, `strict mode violation …`).
+- README links are absolute so they work on npmjs.com.
+
+### Fixed
+
+- Diff identity is computed in-page from the element's own attributes (test
+  attribute, human-authored id, placeholder, else tag + role + name). Since
+  0.6.0 stopped verifying locators after the first unique one, identity
+  derived from verified locators could flip between snapshots and turn a
+  disabled-and-relabelled button into removed + added.
+- Diffing against the oldest kept snapshot no longer evicts that snapshot
+  before the diff is computed.
+- A failed Chromium launch is not cached, and a browser that disconnects is
+  relaunched on the next call.
+- In-page extraction (30 s) and title reads (5 s) are bounded; a hung page
+  surfaces as `page_unresponsive` instead of a session stuck busy forever.
+- A context created for a session is closed if opening the page fails.
+- Focusable elements with an explicit role, a `title`, or an inline `<svg>`
+  are kept; `aria-labelledby` pointing at nothing no longer counts as a name.
+- `.nth()` correlation inside a click-target card prefers the heading, so a
+  same-text badge before it does not steal the index.
+- Click-target cards derive candidates from the heading name, so a role
+  candidate never carries the text blob.
+- Re-typed secrets move to the newest end of the redaction set; a locator
+  whose text was redacted is flagged not unique with a note.
+- Secret detection happens after the fill, so a missing target no longer
+  waits twice.
+- Docs: absent property means null, never false; after-tool action list;
+  request cap; undocumented error codes (`session_busy`, `action_failed`,
+  `wait_selector_timeout`, `page_unresponsive`, `internal_error`).
+- Test coverage: the MCP wire format is now tested end to end through the
+  server (compact JSON, no null node fields, tool annotations).
+
 ## [0.6.0] - 2026-09-08
 
 Same facts, a third of the tokens. Measured on real v0.5 output a node cost
@@ -177,7 +229,8 @@ Initial public release on npm.
 - Parallel locator verification, bounded concurrency, document order kept.
 - Release workflow: pushing a `v*` tag publishes to npm.
 
-[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.4.0...v0.5.0

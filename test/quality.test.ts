@@ -216,3 +216,77 @@ describe("real-listing patterns (v0.5.1, from app-dev run)", () => {
     expect(extract.interactive_nodes.map((n) => n.accessible_name).sort()).toEqual(["Email", "Masuk", "Pilih tanggal", "Tutup"]);
   });
 });
+
+describe("audit fixes (v0.6.1)", () => {
+  it("keeps diff identity independent of which locators were verified", async () => {
+    // A unique role locator ends verification, so the id is never counted;
+    // identity must still come from the id (in-page), not from the locators.
+    fx.route("/ident-a", htmlPage(`<button id="submit-btn">Simpan</button>`));
+    fx.route("/ident-b", htmlPage(`<button id="submit-btn" disabled>Menyimpan…</button>`));
+    const a = assertValidExtract(await extractSemanticDom(input(`${fx.base}/ident-a`)));
+    const b = assertValidExtract(await extractSemanticDom(input(`${fx.base}/ident-b`)));
+    expect(a.interactive_nodes[0]!.fallback_locators).toEqual([]); // nothing beyond the unique role was counted
+    expect(a.interactive_nodes[0]!.identity).toBe("id=submit-btn");
+    const { diffExtracts } = await import("../src/diff.js");
+    const d = diffExtracts({ ...a, snapshot_id: 1 }, { ...b, snapshot_id: 2 });
+    expect(d.summary).toMatchObject({ added: 0, removed: 0, changed: 1 });
+    expect(d.changed[0]!.changes["properties.is_disabled"]).toEqual({ from: false, to: true });
+    expect(d.changed[0]!.changes["accessible_name"]).toEqual({ from: "Simpan", to: "Menyimpan…" });
+  });
+
+  it("keeps icon-only and ARIA-widget focusables, drops true sentinels", async () => {
+    fx.route(
+      "/focusables",
+      htmlPage(`
+        <div tabindex="0" title="Tutup" data-testid="icon-title"><svg viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg></div>
+        <div tabindex="0" data-testid="icon-only"><svg viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg></div>
+        <span role="slider" tabindex="0" aria-valuenow="30" data-testid="thumb"></span>
+        <div tabindex="0" aria-labelledby="missing-id" style="width:0;height:0"></div>
+        <div tabindex="0" style="width:0;height:0;overflow:hidden"></div>`),
+    );
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/focusables`)));
+    const ids = extract.interactive_nodes.map((n) => n.primary_locator.playwright);
+    expect(ids).toEqual(expect.arrayContaining(["getByTestId('icon-title')", "getByTestId('icon-only')", "getByTestId('thumb')"]));
+    expect(extract.interactive_nodes.filter((n) => n.primary_locator.strategy === "css")).toEqual([]);
+    expect(extract.interactive_nodes).toHaveLength(3);
+  });
+
+  it("names elements with accname precedence and never emits a getByLabel that Playwright would not match", async () => {
+    fx.route(
+      "/labels",
+      htmlPage(`
+        <span id="t">Judul</span><input aria-labelledby="t" aria-label="Lain">
+        <label>Nama <input aria-label="Nama lengkap" class="dup"></label>
+        <label>Nama <input aria-label="Nama lengkap" class="dup"></label>`),
+    );
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/labels`)));
+    // aria-labelledby beats aria-label (accname spec, Playwright): the role
+    // locator carries 'Judul' and is verified unique.
+    const judul = extract.interactive_nodes.find((n) => n.tag === "input" && n.accessible_name === "Judul")!;
+    expect(judul.primary_locator).toMatchObject({ playwright: "getByRole('textbox', { name: 'Judul' })", is_unique: true });
+    // aria-label beats the wrapping <label> for both the name and getByLabel;
+    // the ambiguous pair runs the whole chain and never emits getByLabel('Nama'),
+    // nor a getByLabel('Nama lengkap') that would duplicate the role locator.
+    const dups = extract.interactive_nodes.filter((n) => n.tag === "input" && n.accessible_name === "Nama lengkap");
+    expect(dups).toHaveLength(2);
+    for (const d of dups) {
+      const all = [d.primary_locator, ...d.fallback_locators].map((l) => l.playwright);
+      expect(all).not.toContain("getByLabel('Nama')");
+      expect(all.some((p) => p.startsWith("getByLabel("))).toBe(false);
+      expect(d.primary_locator.playwright).toBe("getByRole('textbox', { name: 'Nama lengkap' })");
+    }
+  });
+
+  it("points .nth() at the card heading even when a same-text badge precedes it", async () => {
+    // Identical cards, so no full-text locator is unique and the heading text
+    // (4 matches: badge, heading, badge, heading) stays primary with .nth().
+    const card = () => `<div style="cursor:pointer"><button>Promo</button><h3>Promo</h3><p>Barang Rp1.000</p></div>`;
+    fx.route("/badges", htmlPage(card() + card()));
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/badges`, { include_click_targets: true })));
+    const cards = extract.interactive_nodes.filter((n) => n.tag === "div" && n.accessible_name === "Promo");
+    expect(cards.map((c) => c.primary_locator.disambiguation)).toEqual([
+      "4 matches in frame; use .nth(1).",
+      "4 matches in frame; use .nth(3).",
+    ]);
+  });
+});

@@ -19,6 +19,7 @@ import {
   getBrowser,
   navigateForExtraction,
   newContext,
+  pageTitle,
   performAction,
   snapshotPage,
   waitAfterActions,
@@ -202,8 +203,15 @@ export async function openSession(input: SessionOpenInput): Promise<SessionInfo 
     const browser = await getBrowser();
     const viewport = input.viewport ?? "desktop";
     const context = await newContext(browser, viewport);
-    const page = await context.newPage();
-    const observer = observePage(page);
+    let page: Page;
+    let observer: Observer;
+    try {
+      page = await context.newPage();
+      observer = observePage(page);
+    } catch (err) {
+      await context.close().catch(() => undefined);
+      throw err;
+    }
     s = {
       id: `s_${randomBytes(6).toString("hex")}`,
       context,
@@ -229,7 +237,7 @@ export async function openSession(input: SessionOpenInput): Promise<SessionInfo 
     console.error(`[semantic-dom-mcp] session ${session.id} open (wait_for=${input.wait_for})`);
     await navigateForExtraction(session.page, input);
     await guardAllowlist(session, "after the opening navigation");
-    session.title = await session.page.title();
+    session.title = await pageTitle(session.page);
     // The opening navigation is not part of any act.
     session.observer.compact();
     session.baseline = session.observer.mark();
@@ -285,7 +293,7 @@ export async function actInSession(input: SessionActInput): Promise<SessionActRe
       throw err;
     }
     await guardAllowlist(s, "after the actions");
-    s.title = await s.page.title();
+    s.title = await pageTitle(s.page);
     return redactDeep({
       session_id: s.id,
       url: s.page.url(),
@@ -336,11 +344,14 @@ export async function extractInSession(input: SessionExtractInput): Promise<Sema
     s.title = body.page_metadata.title;
 
     const extract: SemanticExtract = { ...body, snapshot_id: nextId, observed };
+    // Read the diff base before storing the new snapshot: when the base is the
+    // oldest kept snapshot, storing would evict it.
+    const base = fromId === undefined ? undefined : s.snapshots.get(fromId);
     s.snapshots.set(nextId, { ...body, snapshot_id: nextId });
     if (s.snapshots.size > MAX_SNAPSHOTS_KEPT) s.snapshots.delete(s.snapshots.keys().next().value!);
 
     if (fromId === undefined) return extract;
-    return diffExtracts(s.snapshots.get(fromId)!, extract);
+    return diffExtracts(base!, extract);
   });
 }
 

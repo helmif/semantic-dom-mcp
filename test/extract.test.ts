@@ -163,12 +163,13 @@ describe("locator derivation", () => {
     // the only unique option.
     const first = dups.find((n) => n.primary_locator.strategy === "test-id")!;
     expect(first.primary_locator).toMatchObject({ is_unique: false, disambiguation: expect.stringMatching(/use \.nth\(0\)/) });
-    expect([first.primary_locator, ...first.fallback_locators].map((l) => l.strategy)).toEqual(["test-id", "role", "label", "placeholder", "css"]);
+    // (no `label` entry: getByLabel('Kode') would match the same set as the role candidate)
+    expect([first.primary_locator, ...first.fallback_locators].map((l) => l.strategy)).toEqual(["test-id", "role", "placeholder", "css"]);
     // Second field: its human-authored id is the first unique candidate, so it
     // becomes the primary and verification stops there (css never counted).
     const second = dups.find((n) => n.primary_locator.strategy === "id")!;
     expect(second.primary_locator).toMatchObject({ playwright: "locator('#promo-b')", is_unique: true });
-    expect(second.fallback_locators.map((l) => l.strategy)).toEqual(["test-id", "role", "label", "placeholder"]);
+    expect(second.fallback_locators.map((l) => l.strategy)).toEqual(["test-id", "role", "placeholder"]);
   });
 
   it("flags ambiguous locators with is_unique:false and disambiguation guidance", async () => {

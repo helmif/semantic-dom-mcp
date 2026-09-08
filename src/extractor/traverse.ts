@@ -61,6 +61,12 @@ export interface RawNode {
   /** Nearest ancestor data-testid, for disambiguation scoping guidance. */
   scope_hint: string | null;
   /**
+   * Stable identity for snapshot diffs, from the element's own attributes
+   * (test attribute > human-authored id > placeholder > tag|role|name). Never
+   * derived from which locators happened to be verified. Not emitted.
+   */
+  identity: string;
+  /**
    * Structural CSS path from the document root, used server-side only to
    * correlate the element with Playwright locator matches (.nth index).
    * Empty for shadow-DOM nodes — a within-shadow structural path is exactly
@@ -140,7 +146,7 @@ export function __qaRole(el: Element): string | null {
 
 /* ------------------------------------------------------------------ */
 /* Label association & accessible name                                  */
-/* (precedence: aria-label > aria-labelledby > <label> > text)          */
+/* (precedence: aria-labelledby > aria-label > <label> > text)          */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -184,6 +190,10 @@ export function __qaLabelText(el: Element): string | null {
 }
 
 export function __qaAccessibleName(el: Element): string | null {
+  // accname precedence (and Playwright's): aria-labelledby, then aria-label,
+  // then the associated <label>, then content.
+  var labelledBy = __qaIdRefsText(el, "aria-labelledby");
+  if (labelledBy) return labelledBy;
   var ariaLabel = __qaCollapse(el.getAttribute("aria-label"));
   if (ariaLabel) return ariaLabel;
   var labelText = __qaLabelText(el);
@@ -312,11 +322,27 @@ export function __qaShouldInclude(el: Element, role: string | null): boolean {
   if (ti !== null) {
     var n = parseInt(ti, 10);
     if (!isNaN(n) && n >= 0) {
-      if (__qaCollapse(el.getAttribute("aria-label")) || __qaCollapse(el.getAttribute("aria-labelledby"))) return true;
+      // Any explicit role (slider, treeitem, gridcell...) is a widget, in the
+      // interactive list or not.
+      if (role) return true;
+      if (__qaCollapse(el.getAttribute("aria-label")) || __qaIdRefsText(el, "aria-labelledby") || __qaCollapse(el.getAttribute("title"))) return true;
       return __qaHasContent(el);
     }
   }
   return false;
+}
+
+/**
+ * Identity for diffs (see RawNode.identity). Generated ids are skipped: they
+ * change between builds and would pair nothing.
+ */
+export function __qaIdentity(el: Element, role: string | null, accessibleName: string | null): string {
+  var attr = __qaTestAttr(el);
+  if (attr) return attr.attr + "=" + attr.value;
+  if (el.id && !__qaIsGeneratedId(el.id)) return "id=" + el.id;
+  var placeholder = __qaCollapse(el.getAttribute("placeholder"));
+  if (placeholder) return "placeholder=" + placeholder;
+  return el.tagName.toLowerCase() + "|" + (role || "") + "|" + (accessibleName || "");
 }
 
 /* ------------------------------------------------------------------ */
@@ -373,10 +399,10 @@ export function __qaClickTargetHeading(el: Element): string | null {
   return t && t.length <= 80 ? t : null;
 }
 
-/** Click targets must carry content — empty pointer divs are decoration. */
+/** Content = text, an image, or an inline icon; empty pointer divs are decoration. */
 export function __qaHasContent(el: Element): boolean {
   if (__qaCollapse(el.textContent)) return true;
-  return !!(el.querySelector && el.querySelector("img"));
+  return !!(el.querySelector && el.querySelector("img, svg"));
 }
 
 export function __qaProperties(el: Element, visible: boolean): RawNodeProperties {
@@ -548,10 +574,13 @@ export function __qaCandidates(
     out.push({ strategy: "role", value: accessibleName, role: role });
   }
 
-  // getByLabel matches <label> text, aria-labelledby AND aria-label, so an
-  // aria-labelled element without a role still gets a semantic locator.
-  var labelText = __qaLabelText(el) || __qaCollapse(el.getAttribute("aria-label"));
-  if (labelText) out.push({ strategy: "label", value: labelText });
+  // getByLabel resolves aria-labelledby, else aria-label, else <label> text —
+  // that order is Playwright's, so the candidate must follow it or count 0.
+  // When the role candidate already carries the same name the label locator
+  // would match the same set; skip it rather than spend a round trip.
+  var labelText = __qaIdRefsText(el, "aria-labelledby") || __qaCollapse(el.getAttribute("aria-label")) || __qaLabelText(el);
+  var roleCarriesName = role && accessibleName && accessibleName === labelText && authorNamedOnly.indexOf(role) < 0;
+  if (labelText && !roleCarriesName) out.push({ strategy: "label", value: labelText });
 
   var placeholder = el.getAttribute("placeholder");
   if (placeholder) out.push({ strategy: "placeholder", value: placeholder });
@@ -595,14 +624,14 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
   var role = __qaRole(el);
   var accessibleName = __qaAccessibleName(el);
   var cssPath = inShadow ? "" : __qaCssPath(el);
+  // The heading names a click-target card (the full text blob stays in
+  // text_content); it must be settled before candidates are derived so a
+  // role candidate never carries the blob.
+  var heading = clickTarget ? __qaClickTargetHeading(el) : null;
+  if (heading) accessibleName = heading;
   var cand = __qaCandidates(el, role, accessibleName, inShadow, cssPath);
   if (clickTarget) {
-    var heading = __qaClickTargetHeading(el);
-    if (heading) {
-      cand.candidates.unshift({ strategy: "text", value: heading });
-      // The heading names the card; the full text blob stays in text_content.
-      accessibleName = heading;
-    }
+    if (heading) cand.candidates.unshift({ strategy: "text", value: heading });
     cand.note =
       (cand.note ? cand.note + " " : "") +
       "Opt-in click-target heuristic (cursor:pointer, no role/test-id); consider adding a role or data-testid.";
@@ -616,6 +645,7 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
     accessible_name: accessibleName,
     candidates: cand.candidates,
     scope_hint: __qaScopeHint(el),
+    identity: __qaIdentity(el, role, accessibleName),
     css_path: cssPath,
     properties: __qaProperties(el, visible),
   };

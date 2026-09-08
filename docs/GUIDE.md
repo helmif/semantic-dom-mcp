@@ -52,7 +52,7 @@ or commit a `.mcp.json` in the test repo so the whole team gets it:
 }
 ```
 
-Pin a version (`"semantic-dom-mcp@0.3.1"`) if you want the whole team on
+Pin a version (`"semantic-dom-mcp@0.6.1"`) if you want the whole team on
 identical extractions until you choose to upgrade.
 
 **Claude Desktop** — same `mcpServers` block in
@@ -167,12 +167,17 @@ repo too, and regenerate when the session expires.
 | Symptom | Cause & fix |
 | --- | --- |
 | `url_not_allowed` | Host missing from `QA_MCP_ALLOWED_HOSTS` in the *client's* env block (each client passes its own env). |
-| `0 nodes` on a page that clearly has content | SPA rendered after the wait point. Use the default `wait_for: "networkidle"`, or `wait_selector` for a key element. (We hit exactly this on a production React SPA with `wait_for: "load"`.) |
-| `navigation_failed` timeout with `networkidle` | Page never goes network-quiet (analytics/polling). Use `wait_for: "load"` + `wait_selector`. |
+| `0 nodes` on a page that clearly has content | SPA rendered after the wait point. Use the default `wait_for: "auto"` (load, then DOM quiet), or `wait_selector` for a key element. (We hit exactly this on a production React SPA with `wait_for: "load"`.) |
+| `navigation_failed` timeout with `networkidle` | Page never goes network-quiet (analytics, Sentry, polling). Use the default `wait_for: "auto"`, or `load` + `wait_selector`. (Seen on a real dev environment: the default before v0.6.1 was `networkidle` and timed out after 30 s.) |
 | `Executable doesn't exist` | The version-matched browser is missing — run `npx -y -p semantic-dom-mcp playwright install chromium`. |
 | `storage_state_missing` | `QA_MCP_STORAGE_STATE` points at a file that isn't there — regenerate it (§5). |
 | Extraction returns a login page instead of the requested page | Session expired. Run the `check_auth` tool to confirm (`looks_logged_out: true`), then regenerate the storageState (§5). |
 | Locator in generated test not in the extraction | The agent ignored the rules. Reject the PR; that is exactly what review is for. |
+| `session_busy` | Two calls hit one session at once (a client that parallelises tool calls). Calls on a session are serial; retry after the other call returns. |
+| `action_failed` | The locator did not resolve or Playwright refused the action; the message ends with the reason from Playwright's call log (`intercepts pointer events`, `not visible`, `strict mode violation … resolved to N elements`). Take locators from the extraction and apply its `.nth()` guidance. |
+| `wait_selector_timeout` / `wait_selector_after_timeout` | The selector never appeared (15 s). Verify it against an extraction, or extract without it to see what the page shows. |
+| `page_unresponsive` | In-page extraction or reading the title did not complete (30 s / 5 s); the page's JavaScript is blocked. Retry after it settles or close the session. |
+| `internal_error` | Anything unexpected; the message carries the first line. Please report it with the URL pattern. |
 | `session_not_found` | The session expired (idle longer than `QA_MCP_SESSION_TTL_MS`) or was closed. Run `session_list`, then `session_open` again. |
 | `session_limit` | Too many open sessions. Close one with `session_close` or raise `QA_MCP_MAX_SESSIONS`. |
 | `navigated_off_allowlist` and the session is gone | The flow left the staging hosts (an external payment page, say). Add the host to the allowlist if it is yours, or stop the flow before that step. |

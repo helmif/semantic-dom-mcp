@@ -15,22 +15,24 @@ export interface FixtureServer {
   base: string;
   /** http://localhost:<port> — a different origin than `base`. */
   altBase: string;
-  route(path: string, html: string): void;
+  route(path: string, html: string, delayMs?: number): void;
   close(): Promise<void>;
 }
 
 export async function startFixtureServer(): Promise<FixtureServer> {
-  const routes = new Map<string, string>();
+  const routes = new Map<string, { html: string; delayMs: number }>();
   const server = http.createServer((req, res) => {
     // Match on pathname: fixtures that fetch('/api/x?q=1') must hit '/api/x'.
-    const html = routes.get(new URL(req.url ?? "/", "http://fixture").pathname);
-    if (html === undefined) {
+    const entry = routes.get(new URL(req.url ?? "/", "http://fixture").pathname);
+    if (entry === undefined) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
       return;
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(html);
+    setTimeout(() => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(entry.html);
+    }, entry.delayMs);
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as AddressInfo).port;
@@ -38,7 +40,7 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     port,
     base: `http://127.0.0.1:${port}`,
     altBase: `http://localhost:${port}`,
-    route: (path, html) => void routes.set(path, html),
+    route: (path, html, delayMs = 0) => void routes.set(path, { html, delayMs }),
     close: () =>
       new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };
@@ -119,6 +121,7 @@ const nodeSchema = z
     fallback_locators: z.array(locatorSchema),
     properties: propertiesSchema,
     context_note: z.string().optional(),
+    identity: z.string().optional(),
   })
   .strict();
 

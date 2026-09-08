@@ -205,3 +205,51 @@ describe("extract_semantic_dom_after (declared actions)", () => {
     expect(err.message).not.toContain("SECRET-VALUE");
   }, 30_000);
 });
+
+describe("wait_for: auto (v0.6.1)", () => {
+  it("captures a SPA that renders after load and keeps polling the network", async () => {
+    // networkidle would never fire here (a beacon every 150 ms); load fires
+    // before the data request returns. auto = load, then no data request in
+    // flight and no DOM mutation for 500 ms.
+    fx.route(
+      "/spa-poll",
+      htmlPage(`
+        <div id="app"></div>
+        <script>
+          setInterval(() => fetch('/api/ping').catch(() => {}), 150);
+          fetch('/api/products').then(() => {
+            document.getElementById('app').innerHTML =
+              '<button data-testid="late">Muncul belakangan</button><input data-testid="q" aria-label="Cari">';
+          });
+        </script>`),
+    );
+    fx.route("/api/ping", "ok");
+    fx.route("/api/products", "[]", 900); // slower than the quiet window
+    const t0 = Date.now();
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/spa-poll`, { wait_for: "auto" })));
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(extract.interactive_nodes.map((n) => n.primary_locator.playwright)).toEqual(
+      expect.arrayContaining(["getByTestId('late')", "getByTestId('q')"]),
+    );
+    // Same page at plain `load`: the shell only.
+    const atLoad = assertValidExtract(await extractSemanticDom(input(`${fx.base}/spa-poll`, { wait_for: "load" })));
+    expect(atLoad.interactive_nodes).toHaveLength(0);
+    expect(atLoad.page_metadata.notes.join(" ")).toMatch(/wait_for:'auto'/);
+  }, 30_000);
+
+  it("explains why an action failed using Playwright's call log", async () => {
+    fx.route(
+      "/covered",
+      htmlPage(`
+        <div style="position:relative">
+          <button data-testid="under" style="position:absolute;top:0;left:0;width:120px;height:40px">Bayar</button>
+          <div data-testid="overlay" style="position:absolute;top:0;left:0;width:300px;height:200px;background:#fff8"></div>
+        </div>`),
+    );
+    const err = (await extractAfterActions(
+      afterInput(`${fx.base}/covered`, [{ type: "click", locator: { strategy: "test-id", value: "under" } }]),
+    ).catch((e) => e)) as Error & { code: string };
+    expect(err.code).toBe("action_failed");
+    expect(err.message).toMatch(/Reason: .*intercepts pointer events/);
+  }, 30_000);
+});

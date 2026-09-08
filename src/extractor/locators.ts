@@ -99,6 +99,10 @@ async function findNthIndex(frame: Frame, c: RawLocatorCandidate, cssPath: strin
       const list = els as Element[];
       const exact = list.indexOf(target);
       if (exact >= 0) return exact;
+      // Inside a click-target card the heading is what the text candidate
+      // names; a badge or button with the same word may precede it in DOM order.
+      const heading = list.findIndex((el) => target.contains(el) && /^H[1-6]$/.test(el.tagName));
+      if (heading >= 0) return heading;
       return list.findIndex((el) => target.contains(el) || el.contains(target));
     }, cssPath);
     return idx >= 0 ? idx : null;

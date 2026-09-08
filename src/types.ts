@@ -74,6 +74,8 @@ export interface InteractiveNode {
   fallback_locators: Locator[];
   properties: NodeProperties;
   context_note?: string;
+  /** Internal diff identity from the element's own attributes; stripped from the wire. */
+  identity?: string;
 }
 
 export interface PageMetadata {

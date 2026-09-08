@@ -8,11 +8,11 @@ whole QA team, not just accurate.
 
 Same page → same extraction → same conventions → same test style, regardless of who runs it.
 
-**Evidence:** [benchmark/RESULTS.md](benchmark/RESULTS.md). On real pages the Semantic JSON is
+**Evidence:** [benchmark/RESULTS.md](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/RESULTS.md). On real pages the Semantic JSON is
 **92–97% smaller** than the raw DOM an agent would otherwise consume, every locator is
 uniqueness-verified by Playwright's engine, and output is byte-identical across runs. A session
 diff is a further **~90% smaller** than re-extracting the page after a step.
-**Docs:** [How it works (deep dive)](docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](docs/GUIDE.md) · [Benchmark methodology](benchmark/README.md) · [v0.5 flow validation](benchmark/FLOW-VALIDATION.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md)
+**Docs:** [How it works (deep dive)](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/GUIDE.md) · [Benchmark methodology](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/README.md) · [v0.5 flow validation](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/FLOW-VALIDATION.md) · [Roadmap](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/ROADMAP.md) · [Changelog](https://github.com/helmif/semantic-dom-mcp/blob/main/CHANGELOG.md)
 
 ## Quickstart
 
@@ -41,7 +41,7 @@ Then add the server to your MCP client:
 ```
 
 That's the whole setup. Verify by asking your agent to list its MCP tools — you should
-see `extract_semantic_dom`. See [docs/GUIDE.md](docs/GUIDE.md) for per-client config
+see `extract_semantic_dom`. See [docs/GUIDE.md](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/GUIDE.md) for per-client config
 locations (Claude Code, Claude Desktop, Cursor, Windsurf), authenticated staging, and
 troubleshooting. To run from a clone instead (contributors), see Development below.
 
@@ -74,7 +74,7 @@ from the agent's memory.
 
 | Kind | Name | Purpose |
 | --- | --- | --- |
-| Tool | `extract_semantic_dom` | Extract a URL into Semantic JSON (`url`, `wait_for`, `wait_selector`, `include_hidden`, `max_nodes`). Read-only, never touches the page. |
+| Tool | `extract_semantic_dom` | Extract a URL into Semantic JSON (`url`, `wait_for` default `auto` = load then settled, `wait_selector`, `include_hidden`, `max_nodes`, `viewport`, `include_click_targets`). Read-only, never touches the page. |
 | Tool | `extract_semantic_dom_after` | Same, but first runs a short **declared** action list (fill/click/press/select/goto/wait, max 20) in the main frame and snapshots the resulting state, plus an `observed` block of what the page did meanwhile. Refuses to extract if the actions navigated off the allowlist. |
 | Tool | `session_open` | Open a persistent page for a multi-step flow (`url`, `wait_for`, `wait_selector`, `viewport`). Returns a `session_id`. Sessions are capped and expire when idle. |
 | Tool | `session_act` | Run declared actions in an open session. Returns the resulting URL/title and `observed`: main-frame navigations, xhr/fetch requests (method, path, status), console errors, dialogs (dismissed), popups (closed). |
@@ -128,9 +128,10 @@ ones.
   itself (`is_disabled: false → true`), so the test asserts a fact rather than an assumption.
 - **Compact wire format (schema 1.3):** results are compact JSON and a node field that carries no
   information is omitted: `null` fields, `frame_path: []`, `in_shadow: false`, `kind: "element"`,
-  empty `fallback_locators`, and `text_content` equal to `accessible_name`. Absent means
-  null/false/empty; `is_visible` is always present. Fallbacks appear only when the primary is
-  ambiguous or brittle. Same facts, about a third of the tokens.
+  empty `fallback_locators`, and `text_content` equal to `accessible_name`. An absent property is
+  null (not applicable, never false); absent structure means the default (main document, light
+  DOM, nothing worth listing). `is_visible` is always present. Fallbacks appear only when the
+  primary is ambiguous or brittle. Same facts, about a third of the tokens.
 - **Assertable state (since schema 1.2):** every node reports `value` (never for password fields),
   `aria_expanded`, `aria_selected`, `aria_invalid`, `described_by` (the text of the elements
   `aria-describedby` points at, where validation messages live), `validation_message` (browser
@@ -149,7 +150,9 @@ ones.
   `aria-hidden` do not hide an element for Playwright and do not here either.
 - **Secrets never leave the server:** a value typed into a password field, or a `fill` marked
   `secret: true`, is scrubbed from every string in every result (values, text, console, dialogs,
-  errors) when it is 8+ characters. Password and credential-autocomplete fields never report a
+  errors) when it is 8+ characters. The set is process-wide and lasts until the server exits, so
+  mark only real secrets: a redacted string blanks that text everywhere, and a locator whose text
+  was redacted is flagged not unique. Password and credential-autocomplete fields never report a
   `value` at all.
 - **Hidden nodes are included** and flagged `is_visible: false` (tests often assert hidden-ness);
   pass `include_hidden: false` to drop them (the count dropped is noted, never silent).

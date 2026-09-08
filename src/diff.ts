@@ -10,10 +10,12 @@
  * Identity must survive the transitions a test cares about most: a hidden
  * menu item becoming visible changes its *resolved* primary locator
  * (getByRole skips hidden elements, so the hidden state resolves to
- * getByText), but not what the element is. So identity is built from the
- * most stable fact available, in order: a test-id locator → an id locator →
- * a placeholder locator → tag + role + accessible name; plus frame_path and a
- * document-order index so non-unique nodes (list rows) still pair up. The
+ * getByText), but not what the element is. So identity comes from the
+ * element's own attributes, computed in-page (test attribute → human-authored
+ * id → placeholder → tag + role + accessible name) and never from which
+ * locators happened to be verified: verification stops early on unique
+ * nodes, so locator presence is capture-dependent. frame_path and a
+ * document-order index let non-unique nodes (list rows) pair up. The
  * resolved primary locator is then reported as an ordinary change, which
  * tells the agent which expression is valid in which state.
  */
@@ -21,8 +23,9 @@ import type { ChangedNode, FieldChange, InteractiveNode, Locator, RemovedNodeRef
 
 const IDENTITY_STRATEGIES: ReadonlyArray<Locator["strategy"]> = ["test-id", "id", "placeholder"];
 
-/** Stable per-element identity (see module doc). */
+/** Stable per-element identity (see module doc). Nodes without an in-page identity (markers, hand-built) fall back to locators. */
 export function identityKey(node: InteractiveNode): string {
+  if (node.identity) return `${node.frame_path.join(">")}|${node.identity}`;
   const locators = [node.primary_locator, ...node.fallback_locators];
   for (const strategy of IDENTITY_STRATEGIES) {
     const hit = locators.find((l) => l.strategy === strategy);

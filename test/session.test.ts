@@ -6,6 +6,7 @@ import {
   closeSession,
   extractInSession,
   listSessions,
+  MAX_SNAPSHOTS_KEPT,
   openSession,
   openSessionCount,
   type SessionExtractInput,
@@ -348,5 +349,16 @@ describe("session guardrails", () => {
     ).rejects.toMatchObject({ code: "action_failed" });
     const extract = assertValidExtract((await extractInSession(extractInput(s.session_id))) as SemanticExtract);
     expect(extract.page_metadata.url).toBe(`${fx.base}/dashboard`);
+  });
+});
+
+describe("audit fixes (v0.6.1)", () => {
+  it("diffs against the oldest kept snapshot without evicting it first", async () => {
+    const s = await open("/dashboard");
+    for (let i = 0; i < MAX_SNAPSHOTS_KEPT; i++) await extractInSession(extractInput(s.session_id));
+    // Snapshots #1..#5 are kept; #6 would evict #1. The diff base must be read first.
+    const diff = semanticDiffSchema.parse(await extractInSession(extractInput(s.session_id, { diff_against: 1 })));
+    expect(diff.from_snapshot).toBe(1);
+    expect(diff.to_snapshot).toBe(MAX_SNAPSHOTS_KEPT + 1);
   });
 });

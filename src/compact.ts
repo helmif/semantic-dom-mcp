@@ -50,6 +50,7 @@ export function compactNode(node: InteractiveNode): Json {
     fallback_locators: fallbacks.length > 0 ? fallbacks : null,
     properties: props,
     context_note: node.context_note ?? null,
+    // `identity` is internal (diff pairing) and never emitted.
   });
   return out;
 }

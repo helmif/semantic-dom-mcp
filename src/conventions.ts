@@ -10,7 +10,10 @@ export const DEFAULT_TEAM_NAME = process.env.QA_MCP_TEAM_NAME ?? "QA";
 export const TEAM_CONVENTIONS = `TEAM CONVENTIONS (non-negotiable):
 - Locators: use ONLY the \`playwright\` expression from each node. Prefer
   primary_locator; use a fallback only if primary.is_unique is false or the
-  primary is unusable, and add a comment stating why.
+  primary is unusable, and add a comment stating why. Absent fields: a
+  property that is absent is null (not applicable; never assume false);
+  absent frame_path/in_shadow/fallback_locators mean main document / light
+  DOM / nothing worth listing.
 - If a locator has is_unique: false, apply its \`disambiguation\` guidance;
   never ship an ambiguous locator without scoping it.
 - Frames: for any node with non-empty frame_path, chain frameLocator() in the
@@ -35,7 +38,7 @@ export const TEAM_CONVENTIONS = `TEAM CONVENTIONS (non-negotiable):
   and \`observed.requests\` (method + path + status) for page.waitForResponse
   before asserting UI that depends on the response. Never guess redirect
   targets or API paths — if they are not in \`observed\`, do not wait on them.
-- Values: assert field state with the 1.2 properties (value, aria_invalid,
+- Values: assert field state with the node properties (value, aria_invalid,
   described_by, validation_message, options) via toHaveValue / toHaveAttribute
   / toContainText on the described_by element — not by re-reading the DOM.
 - Do NOT invent selectors, ids, roles, or text not present in the data. If a

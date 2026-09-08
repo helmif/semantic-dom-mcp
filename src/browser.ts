@@ -17,7 +17,7 @@ import { buildEvaluateExpression, CLOSED_SHADOW_INIT_SCRIPT } from "./extractor/
 import { buildPwLocator, resolveLocators, type CountCache } from "./extractor/locators.js";
 import type { RawExtractResult } from "./extractor/traverse.js";
 import { observePage } from "./observe.js";
-import { redactDeep, registerSecret } from "./secrets.js";
+import { REDACTED, redactDeep, registerSecret } from "./secrets.js";
 import { emptyProperties, type InteractiveNode, type LocatorStrategy, type SemanticExtract } from "./types.js";
 import { safeOrigin, stripQuery } from "./url.js";
 
@@ -43,12 +43,61 @@ export class ExtractError extends Error {
 
 let browserPromise: Promise<Browser> | undefined;
 
+/**
+ * Launches once and reuses. A failed launch is not cached (the next call
+ * retries, so installing the browser mid-session recovers), and a browser
+ * that disconnects (crash, OOM kill) is forgotten so the next call relaunches.
+ */
 export function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
     console.error("[semantic-dom-mcp] launching chromium (headless)");
-    browserPromise = chromium.launch({ headless: true });
+    const launching: Promise<Browser> = chromium
+      .launch({ headless: true })
+      .then((browser) => {
+        browser.on("disconnected", () => {
+          if (browserPromise === launching) {
+            browserPromise = undefined;
+            console.error("[semantic-dom-mcp] chromium disconnected; it will be relaunched on the next call");
+          }
+        });
+        return browser;
+      })
+      .catch((err: unknown) => {
+        if (browserPromise === launching) browserPromise = undefined;
+        throw err;
+      });
+    browserPromise = launching;
   }
   return browserPromise;
+}
+
+/** Bounds a Playwright call that has no timeout of its own (evaluate, title). */
+export async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new ExtractError(
+            "page_unresponsive",
+            `${what} did not complete within ${Math.round(ms / 1000)}s; the page's JavaScript may be blocked.`,
+            "Retry after the page settles, or extract a different state; a session stuck this way can be closed.",
+          ),
+        ),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const EVALUATE_TIMEOUT_MS = 30_000;
+const TITLE_TIMEOUT_MS = 5_000;
+
+export function pageTitle(page: Page): Promise<string> {
+  return withTimeout(page.title(), TITLE_TIMEOUT_MS, "Reading the page title").catch(() => "");
 }
 
 export async function closeBrowser(): Promise<void> {
@@ -128,7 +177,12 @@ export async function newContext(browser: Browser, viewport: ViewportPreset = "d
       ? { viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true }
       : {}),
   });
-  await context.addInitScript(CLOSED_SHADOW_INIT_SCRIPT);
+  try {
+    await context.addInitScript(CLOSED_SHADOW_INIT_SCRIPT);
+  } catch (err) {
+    await context.close().catch(() => undefined);
+    throw err;
+  }
   return context;
 }
 
@@ -211,9 +265,11 @@ export async function enumerateFrames(page: Page): Promise<FrameEntry[]> {
 /* Extraction orchestration                                             */
 /* ------------------------------------------------------------------ */
 
+export type WaitFor = "auto" | "load" | "domcontentloaded" | "networkidle";
+
 export interface ExtractInput {
   url: string;
-  wait_for: "load" | "domcontentloaded" | "networkidle";
+  wait_for: WaitFor;
   wait_selector?: string | undefined;
   include_hidden: boolean;
   max_nodes: number;
@@ -268,19 +324,123 @@ async function crossOriginMarker(entry: FrameEntry, notes: string[]): Promise<In
   };
 }
 
+/**
+ * "Settled" wait for `wait_for: "auto"`: no xhr/fetch request in flight AND
+ * no DOM mutation for `quietMs`, bounded by `maxMs`. Real SPAs render after
+ * `load` once their data arrives, and never go network-idle when analytics
+ * or polling run, so neither Playwright condition alone works as a default:
+ * `networkidle` times out on pages with beacons, `load` snapshots an empty
+ * application shell, and a DOM-quiet window alone resolves while the first
+ * data request is still pending. A navigation during the wait (a redirect to
+ * login) simply restarts the mutation counter on the new document.
+ */
+const SETTLE_QUIET_MS = 500;
+const SETTLE_MAX_MS = 6_000;
+const SETTLE_POLL_MS = 100;
+
+export interface SettleTracker {
+  /** Poll until settled (or maxMs), then detach. */
+  wait(quietMs?: number, maxMs?: number): Promise<void>;
+  /** Detach without waiting (navigation failed). */
+  stop(): void;
+}
+
+/**
+ * Attach BEFORE navigating: a SPA fires its first data request while the
+ * document is still parsing, well before `load`, and a tracker attached
+ * afterwards would count that request as never having been in flight.
+ */
+export function trackSettle(page: Page): SettleTracker {
+  let inflight = 0;
+  const isData = (r: import("playwright").Request) => r.resourceType() === "xhr" || r.resourceType() === "fetch";
+  const onRequest = (r: import("playwright").Request) => {
+    if (isData(r)) inflight++;
+  };
+  const onDone = (r: import("playwright").Request) => {
+    if (isData(r)) inflight = Math.max(0, inflight - 1);
+  };
+  const onNavigated = (frame: import("playwright").Frame) => {
+    if (frame === page.mainFrame()) inflight = 0; // requests of the old document are gone with it
+  };
+  page.on("request", onRequest);
+  page.on("requestfinished", onDone);
+  page.on("requestfailed", onDone);
+  page.on("framenavigated", onNavigated);
+  const stop = () => {
+    page.off("request", onRequest);
+    page.off("requestfinished", onDone);
+    page.off("requestfailed", onDone);
+    page.off("framenavigated", onNavigated);
+  };
+  return {
+    stop,
+    async wait(quietMs = SETTLE_QUIET_MS, maxMs = SETTLE_MAX_MS) {
+      try {
+        await waitForSettled(page, () => inflight, quietMs, maxMs);
+      } finally {
+        stop();
+      }
+    },
+  };
+}
+
+async function waitForSettled(page: Page, inflight: () => number, quietMs: number, maxMs: number): Promise<void> {
+  const start = Date.now();
+
+  const install = () =>
+    page
+      .evaluate(() => {
+        const w = window as unknown as { __qaMutations?: number };
+        if (w.__qaMutations === undefined) {
+          w.__qaMutations = 0;
+          new MutationObserver(() => {
+            w.__qaMutations = (w.__qaMutations ?? 0) + 1;
+          }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+        }
+      })
+      .catch(() => undefined);
+  const read = () => page.evaluate(() => (window as unknown as { __qaMutations?: number }).__qaMutations ?? -1).catch(() => -1);
+
+  await install();
+  let last = await read();
+  let lastChange = Date.now();
+  while (Date.now() - start < maxMs) {
+    await page.waitForTimeout(SETTLE_POLL_MS);
+    const count = await read();
+    if (count === -1) {
+      // Context gone (navigation): new document, start over on it.
+      await install();
+      lastChange = Date.now();
+      last = await read();
+      continue;
+    }
+    if (count !== last) {
+      last = count;
+      lastChange = Date.now();
+    }
+    if (inflight() === 0 && Date.now() - lastChange >= quietMs) return;
+  }
+}
+
+/** `auto` (default): `load`, then waitForSettled. See there for why. */
 export async function navigateForExtraction(
   page: Page,
   input: Pick<ExtractInput, "url" | "wait_for" | "wait_selector">,
 ): Promise<void> {
+  const settle = input.wait_for === "auto" ? trackSettle(page) : null;
   try {
-    await page.goto(input.url, { waitUntil: input.wait_for, timeout: NAV_TIMEOUT_MS });
+    await page.goto(input.url, { waitUntil: input.wait_for === "auto" ? "load" : input.wait_for, timeout: NAV_TIMEOUT_MS });
   } catch (err) {
+    settle?.stop();
     throw new ExtractError(
       "navigation_failed",
       `Navigation to the target URL failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
-      "Check that the staging URL is reachable and the wait_for condition is achievable.",
+      input.wait_for === "networkidle"
+        ? "Pages with analytics or polling never go network-idle; use wait_for:'auto' (the default) or wait_selector."
+        : "Check that the staging URL is reachable and the wait_for condition is achievable.",
     );
   }
+  if (settle) await settle.wait();
   if (input.wait_selector) {
     try {
       await page.waitForSelector(input.wait_selector, {
@@ -323,14 +483,19 @@ export async function snapshotPage(
 
       let raw: RawExtractResult;
       try {
-        raw = (await entry.frame.evaluate(
-          buildEvaluateExpression({
-            maxNodes: budget,
-            maxDepth: MAX_DEPTH,
-            includeClickTargets: input.include_click_targets === true,
-          }),
+        raw = (await withTimeout(
+          entry.frame.evaluate(
+            buildEvaluateExpression({
+              maxNodes: budget,
+              maxDepth: MAX_DEPTH,
+              includeClickTargets: input.include_click_targets === true,
+            }),
+          ),
+          EVALUATE_TIMEOUT_MS,
+          "In-page extraction",
         )) as RawExtractResult;
       } catch (err) {
+        if (err instanceof ExtractError) throw err;
         notes.push(
           `Frame '${entry.url}' could not be evaluated and was skipped: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
         );
@@ -371,6 +536,7 @@ export async function snapshotPage(
             primary_locator: primary,
             fallback_locators: fallbacks,
             properties: rawNode.properties,
+            identity: rawNode.identity,
           };
           const contextNotes = [rawNode.context_note, note].filter(Boolean);
           if (contextNotes.length > 0) node.context_note = contextNotes.join(" ");
@@ -384,14 +550,14 @@ export async function snapshotPage(
     }
     if (nodes.length === 0) {
       notes.push(
-        "0 nodes extracted. If this page is a SPA that renders after the wait point, retry with wait_for:'networkidle' or a wait_selector for a key element.",
+        "0 nodes extracted. If this page is a SPA that renders after the wait point, retry with wait_for:'auto' (default) or a wait_selector for a key element.",
       );
     }
 
-    return redactDeep<SemanticExtract>({
+    const extract = redactDeep<SemanticExtract>({
       schema_version: "1.3",
       page_metadata: {
-        title: await page.title(),
+        title: await pageTitle(page),
         url: page.url(),
         captured_at: new Date().toISOString(),
         node_count: nodes.length,
@@ -401,6 +567,17 @@ export async function snapshotPage(
       },
       interactive_nodes: nodes,
     });
+    // A locator whose text contained a secret cannot be used as emitted: say so
+    // rather than carry a verified-unique flag on a string that matches nothing.
+    for (const node of extract.interactive_nodes) {
+      for (const loc of [node.primary_locator, ...node.fallback_locators]) {
+        if (loc.playwright.includes(REDACTED)) {
+          loc.is_unique = false;
+          loc.disambiguation = "Locator text contained a redacted secret; locate this element by another attribute.";
+        }
+      }
+    }
+    return extract;
 }
 
 export async function extractSemanticDom(input: ExtractInput): Promise<SemanticExtract> {
@@ -495,13 +672,15 @@ export async function performAction(page: Page, action: PageAction, index: numbe
         return;
       case "fill": {
         const target = actionTarget(page, action.locator);
-        // Values typed into password fields (or flagged secret) are scrubbed
-        // from every output string from now on.
-        const isPassword = await target
-          .evaluate((el) => (el as HTMLInputElement).type === "password", undefined, { timeout: ACTION_TIMEOUT_MS })
-          .catch(() => false);
-        if (action.secret || isPassword) registerSecret(action.value);
         await target.fill(action.value, { timeout: ACTION_TIMEOUT_MS });
+        // Values typed into password fields (or flagged secret) are scrubbed
+        // from every output string from now on. Detected after the fill, on
+        // the element that just received it, so a missing target does not
+        // wait twice; nothing is output between the two steps.
+        const isPassword = action.secret
+          ? true
+          : await target.evaluate((el) => (el as HTMLInputElement).type === "password", undefined, { timeout: 1_000 }).catch(() => false);
+        if (isPassword) registerSecret(action.value);
         return;
       }
       case "click":
@@ -525,13 +704,19 @@ export async function performAction(page: Page, action: PageAction, index: numbe
               : undefined,
           );
         }
-        await page.goto(action.url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
+        const settle = trackSettle(page);
+        await page.goto(action.url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS }).catch((err) => {
+          settle.stop();
+          throw err;
+        });
+        await settle.wait();
         return;
       }
     }
   } catch (err) {
     if (err instanceof ExtractError) throw err;
     // Never echo fill values (they may hold credentials) — only the locator.
+    const reason = actionFailureReason(err);
     const where =
       action.type === "wait"
         ? "wait"
@@ -540,10 +725,32 @@ export async function performAction(page: Page, action: PageAction, index: numbe
           : `${action.locator.strategy}='${action.locator.value}'`;
     throw new ExtractError(
       "action_failed",
-      `Action ${index + 1} (${action.type}) failed on ${where}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+      `Action ${index + 1} (${action.type}) failed on ${where}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}${reason ? ` Reason: ${reason}` : ""}`,
       "Derive action locators from a prior extract_semantic_dom call; apply nth from its disambiguation when flagged non-unique.",
     );
   }
+}
+
+/**
+ * Playwright puts the useful part of an action failure in its call log
+ * ("<div> intercepts pointer events", "element is not visible", "strict mode
+ * violation … resolved to 3 elements"); the first line is just the timeout.
+ */
+function actionFailureReason(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const lines = err.message.split("\n").map((l) => l.replace(/^\s*-\s*/, "").replace(/^\d+ × /, "").trim());
+  // Actionability verdicts first; "waiting for <locator>" only says the element never showed up.
+  const verdict = /intercepts pointer events|is not visible|not enabled|not editable|outside of the viewport|strict mode violation|resolved to \d+ elements|element is not attached|element was detached|is hidden/i;
+  const picked: string[] = [];
+  for (const l of lines) {
+    if (verdict.test(l) && !picked.includes(l)) picked.push(l);
+    if (picked.length === 3) break;
+  }
+  if (picked.length === 0) {
+    const waiting = lines.find((l) => /^waiting for/i.test(l));
+    if (waiting) picked.push(`${waiting} (no element matched within the timeout)`);
+  }
+  return picked.length > 0 ? picked.join("; ") : null;
 }
 
 /**
@@ -598,10 +805,7 @@ export interface AuthCheckReport {
   looks_logged_out: boolean;
 }
 
-export async function checkAuth(
-  url: string,
-  waitFor: "load" | "domcontentloaded" | "networkidle",
-): Promise<AuthCheckReport> {
+export async function checkAuth(url: string, waitFor: WaitFor): Promise<AuthCheckReport> {
   const denial = checkUrlAllowed(url);
   if (denial) throw new ExtractError("url_not_allowed", denial);
   return withPage(async (page) => {
@@ -635,13 +839,18 @@ export interface FrameReport {
   reachable: boolean;
 }
 
-export async function listFrames(url: string, waitFor: "load" | "domcontentloaded" | "networkidle"): Promise<FrameReport[]> {
+export async function listFrames(url: string, waitFor: WaitFor): Promise<FrameReport[]> {
   const denial = checkUrlAllowed(url);
   if (denial) throw new ExtractError("url_not_allowed", denial);
 
   return withPage(async (page) => {
     try {
-      await page.goto(url, { waitUntil: waitFor, timeout: NAV_TIMEOUT_MS });
+      const settle = waitFor === "auto" ? trackSettle(page) : null;
+      await page.goto(url, { waitUntil: waitFor === "auto" ? "load" : waitFor, timeout: NAV_TIMEOUT_MS }).catch((err) => {
+        settle?.stop();
+        throw err;
+      });
+      if (settle) await settle.wait();
     } catch (err) {
       throw new ExtractError(
         "navigation_failed",

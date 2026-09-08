@@ -83,11 +83,15 @@ page is observed, never modified.
 
 ### Stage 3 — Navigate and wait
 
-`page.goto(url, { waitUntil })` with `networkidle` as the default, because modern SPAs render
-*after* the `load` event — extracting at `load` returns an empty application shell (a real
-first-day failure that is now a self-explaining hint: a 0-node extraction tells you to try
-`networkidle` or `wait_selector`). An optional `wait_selector` waits for a specific element,
-which beats time-based waiting for slow dashboards.
+`page.goto(url, { waitUntil: "load" })`, then (default `wait_for: "auto"`) a **DOM-quiet wait**:
+a `MutationObserver` inside the page resolves once nothing has changed for 500 ms, bounded at
+6 s. Modern SPAs render *after* the `load` event, so snapshotting at `load` returns an empty
+application shell; and `networkidle`, the previous default, never fires on pages with analytics
+beacons or polling (a real dev environment timed out after 30 s). DOM quiet is what "the page
+has rendered" means in practice, and it costs at most the quiet window. `load`,
+`domcontentloaded` and `networkidle` remain selectable. An optional `wait_selector` waits for a
+specific element, which beats time-based waiting for slow dashboards, and a 0-node extraction
+carries a hint saying so.
 
 ### Stage 4 — Frame enumeration
 
@@ -208,8 +212,9 @@ pipeline generated) plus `interactive_nodes`. Internally, properties that don't 
 `null`, never omitted, so diffing and tests reason about one fixed shape. **On the wire** (schema
 1.3, `src/compact.ts`) the same object is emitted as compact JSON with the empty parts left out:
 `null` fields, `frame_path: []`, `in_shadow: false`, `kind: "element"`, empty
-`fallback_locators`, and `text_content` when it equals `accessible_name`. Absent means
-null/false/empty; `is_visible` is always present. Measured on real pages this is about a third
+`fallback_locators`, and `text_content` when it equals `accessible_name`. An absent property is
+null (not applicable, never false); absent structure is the default. `is_visible` is always
+present. Measured on real pages this is about a third
 of the tokens for the same facts. The schema is versioned and frozen: additive changes bump the
 minor, breaking changes would bump the major, and agents can rely on the shape.
 
@@ -221,7 +226,7 @@ facts.
 
 A snapshot cannot contain the login-error toast, because that UI exists only *after* an
 interaction — and the extractor must never improvise interactions. The resolution is **declared
-actions**: the agent passes a bounded list (`fill`, `click`, `press`, `wait`; max 20) using
+actions**: the agent passes a bounded list (`fill`, `click`, `press`, `select`, `goto`, `wait`; max 20) using
 locator data from a prior extraction; the server performs them in the main frame and snapshots
 the result. Deliberately *not* an arbitrary-script API — every action is schema-validated, fill
 values are never logged or echoed into errors (they may be credentials), each action has a
@@ -236,7 +241,9 @@ states, and three things a test needs live *between* snapshots: where the page n
 requests it made, and what changed. v0.5 adds a session layer for exactly that.
 
 **Sessions.** `session_open` creates a fresh browser context (storageState applied) and one page
-that stays open across tool calls. `session_act` runs a declared action list on it (the same
+that stays open across tool calls. In-page work is bounded (extraction 30 s, title 5 s) so a page
+whose JavaScript hangs surfaces as `page_unresponsive` instead of a session stuck busy forever;
+a browser that crashes is relaunched on the next call. `session_act` runs a declared action list on it (the same
 bounded types as the after-tool, plus `select` and an allowlisted `goto`); `session_extract` runs
 the same in-page engine and locator resolution as Stage 5 and 6 on the page's current state;
 `session_close` releases the context and is idempotent. Guardrails are the single-shot ones plus
@@ -264,16 +271,20 @@ password field (detected at fill time) or one marked `secret: true` registers th
 every string in every result is scrubbed of it afterwards: node values after a "show password"
 toggle, a status line that echoes the input, console messages, dialog text, error messages.
 Values shorter than 8 characters are not scrubbed, since they would collide with ordinary page
-copy. Independently, the in-page engine never reports `value` for password fields or for
+copy. The set is process-wide (a secret typed in one session is scrubbed from every later result
+in any session) and lasts until the server exits, which is why `secret: true` is for real secrets
+only; a locator whose text was redacted is emitted with `is_unique: false` and a note, since the
+emitted string can no longer match. Independently, the in-page engine never reports `value` for password fields or for
 `autocomplete` tokens that mark credentials, one-time codes and card data.
 
 **Diffs.** `session_extract({ diff_against })` pairs nodes across two snapshots by identity. The
 resolved primary locator is deliberately *not* the identity: a hidden menu item resolves to
 `getByText` (role locators skip hidden elements) and the same item, once visible, to
 `getByRole`, and that transition is exactly what a test wants reported as a change. Identity is
-the most stable fact available, in order: a test-id locator, else an id locator, else a
-placeholder locator, else tag + role + accessible name; plus the frame path and a document-order
-index so non-unique nodes (list rows) still pair up. Same key on both sides and different fields =
+computed inside the page from the element's own attributes, so it does not depend on which
+locators were verified (verification stops early on unique nodes): a test attribute, else a
+human-authored id, else a placeholder, else tag + role + accessible name; plus the frame path and
+a document-order index so non-unique nodes (list rows) still pair up. Same key on both sides and different fields =
 `changed`, with a `from`/`to` per field, including `primary_locator.playwright` so the agent
 knows which expression is valid in which state; a key only on the new side = `added` (the toast,
 the dialog, the next page's controls); only on the old side = `removed`, as a compact reference.
@@ -321,7 +332,7 @@ is a reviewable pull request.
   v0.5's `observed` block targets exactly those two; the next A/B run measures whether they drop
   to zero.
 - **Observed requests are what the page made, filtered.** Only xhr/fetch/document/eventsource/
-  websocket resources are listed and capped at 200 per act; bodies and query strings are never
+  websocket resources are listed and capped at 500 per snapshot interval; bodies and query strings are never
   captured, so a test can wait on a path and method, not on a payload.
 - **Diff identity needs a stable fact.** A control whose accessible name changes between steps
   (a button flipping from "Save" to "Saving…") pairs up only through a test-id, id or placeholder;

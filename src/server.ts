@@ -17,9 +17,13 @@ const extractInputSchema = z
       .string()
       .describe("The page to extract. Must be http/https and on an allowlisted host."),
     wait_for: z
-      .enum(["load", "domcontentloaded", "networkidle"])
-      .default("networkidle")
-      .describe("Navigation wait condition."),
+      .enum(["auto", "load", "domcontentloaded", "networkidle"])
+      .default("auto")
+      .describe(
+        "Navigation wait. 'auto' (default) waits for load, then until the DOM has been quiet for 500ms (max 6s) — " +
+          "works on SPAs that render after load and on pages whose analytics never let the network go idle. " +
+          "'networkidle' times out on such pages.",
+      ),
     wait_selector: z
       .string()
       .optional()
@@ -115,10 +119,7 @@ const extractAfterInputSchema = extractInputSchema
 const listFramesInputSchema = z
   .object({
     url: z.string().describe("The page whose frame tree to report. Must be http/https and allowlisted."),
-    wait_for: z
-      .enum(["load", "domcontentloaded", "networkidle"])
-      .default("networkidle")
-      .describe("Navigation wait condition."),
+    wait_for: z.enum(["auto", "load", "domcontentloaded", "networkidle"]).default("auto").describe("Navigation wait; see extract_semantic_dom."),
   })
   .strict();
 
@@ -177,7 +178,7 @@ function errorResult(err: unknown): ToolResult {
     err instanceof ExtractError
       ? { error: err.code, message: err.message, ...(err.hint ? { hint: err.hint } : {}) }
       : { error: "internal_error", message: err instanceof Error ? err.message.split("\n")[0] : String(err) };
-  return { isError: true, content: [{ type: "text", text: redactString(JSON.stringify(body, null, 2)) }] };
+  return { isError: true, content: [{ type: "text", text: redactString(JSON.stringify(body)) }] };
 }
 
 /** One handler shape for every tool: JSON on success, structured error + one stderr line on failure. */
@@ -193,8 +194,9 @@ function guarded<A>(name: string, fn: (args: A) => Promise<unknown>): (args: A) 
 }
 
 const SERVER_INSTRUCTIONS =
-  "Output is compact JSON (schema 1.3): a node field that is absent is null/false/empty (no frame_path = main " +
-  "document, no fallback_locators = the primary is unique). " +
+  "Output is compact JSON (schema 1.3). An absent node property is null (not applicable; never read it as false). " +
+  "Absent frame_path = main document, absent in_shadow = light DOM, absent fallback_locators = nothing worth " +
+  "listing (rely on primary_locator.is_unique). " +
   "Always extract before writing a Playwright test; never author locators from memory — use only the " +
   "`playwright` expressions returned by an extraction. Single page: `extract_semantic_dom`. " +
   "Multi-step flow (login → cart → checkout): `session_open`, then alternate `session_act` (declared " +
@@ -206,7 +208,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.6.0" },
+    { name: "semantic-dom-mcp", version: "0.6.1" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -341,7 +343,7 @@ export function createServer(): McpServer {
     "write_playwright_test",
     {
       description:
-        "Team-standard prompt for writing a Playwright test in TypeScript from a Semantic DOM extraction. " +
+        "Team-standard prompt for writing a Playwright test in TypeScript from a Semantic DOM extraction or a session diff. " +
         "Ensures every engineer gets identical conventions: locator usage, frame chaining, structure, " +
         "assertions, and single-snapshot state honesty.",
       argsSchema: {

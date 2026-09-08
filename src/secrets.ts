@@ -23,6 +23,7 @@ export const REDACTED = "[REDACTED]";
 
 export function registerSecret(value: string): void {
   if (value.length < MIN_SECRET_LENGTH) return;
+  secrets.delete(value); // re-typed secrets move to the newest end, so eviction drops truly stale ones
   if (secrets.size >= MAX_SECRETS) {
     const oldest = secrets.values().next().value;
     if (oldest !== undefined) secrets.delete(oldest);
