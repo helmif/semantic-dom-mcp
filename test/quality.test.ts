@@ -173,3 +173,48 @@ describe("check_auth (v0.3)", () => {
     expect(report.redirected).toBe(false);
   });
 });
+
+describe("real-listing patterns (v0.5.1, from app-dev run)", () => {
+  it("names a click-target card by its heading and gives .nth() for cards repeated across sections", async () => {
+    const card = (name: string) =>
+      `<div style="cursor:pointer" class="card"><span>COD</span><h3>${name}</h3><p>Terjual 0 · Harga Rp10.000 Rekomendasi Rp15.000</p></div>`;
+    fx.route(
+      "/listing",
+      htmlPage(`
+        <section><h2>Terbaru</h2>${card("Sepatu Lari X")}${card("Tas Selempang Y")}</section>
+        <section><h2>Rekomendasi</h2>${card("Sepatu Lari X")}</section>
+        <section><h2>Promo</h2>${card("Sepatu Lari X")}</section>`),
+    );
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/listing`, { include_click_targets: true })));
+    const cards = extract.interactive_nodes.filter((n) => n.accessible_name === "Sepatu Lari X");
+    expect(cards).toHaveLength(3);
+    // The heading names the card; the full blob stays in text_content.
+    expect(cards[0]!.properties.text_content).toMatch(/^COD.*Sepatu Lari X.*Rp10\.000/);
+    // getByText resolves to the <h3> inside each card, not the card itself, so
+    // the .nth() index must be found by containment — each card gets its own.
+    expect(cards.map((c) => c.primary_locator.disambiguation)).toEqual([
+      "3 matches in frame; use .nth(0).",
+      "3 matches in frame; use .nth(1).",
+      "3 matches in frame; use .nth(2).",
+    ]);
+    expect(extract.interactive_nodes.find((n) => n.accessible_name === "Tas Selempang Y")!.primary_locator.is_unique).toBe(true);
+  });
+
+  it("drops focus-trap sentinels but keeps focusable controls with a name or content", async () => {
+    fx.route(
+      "/sentinels",
+      htmlPage(`
+        <div role="dialog" aria-label="Masuk">
+          <div tabindex="0" style="width:0;height:0;overflow:hidden"></div>
+          <div tabindex="0" data-testid="custom-control">Pilih tanggal</div>
+          <div tabindex="0" aria-label="Tutup"></div>
+          <input aria-label="Email">
+          <div tabindex="0" style="width:0;height:0;overflow:hidden"></div>
+        </div>`),
+    );
+    const extract = assertValidExtract(await extractSemanticDom(input(`${fx.base}/sentinels`)));
+    const css = extract.interactive_nodes.filter((n) => n.primary_locator.strategy === "css");
+    expect(css).toEqual([]); // no nameless structural-CSS nodes
+    expect(extract.interactive_nodes.map((n) => n.accessible_name).sort()).toEqual(["Email", "Masuk", "Pilih tanggal", "Tutup"]);
+  });
+});

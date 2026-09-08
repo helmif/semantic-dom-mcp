@@ -84,13 +84,22 @@ async function countMatches(frame: Frame, c: RawLocatorCandidate, cache: CountCa
   return count;
 }
 
-/** Index of this node among the primary locator's matches, for `.nth(i)`. */
+/**
+ * Index of this node among the primary locator's matches, for `.nth(i)`.
+ * A candidate may resolve to a descendant rather than the node itself (a
+ * click-target card located by its heading text), or to an ancestor, so the
+ * first match related by containment counts as this node's.
+ */
 async function findNthIndex(frame: Frame, c: RawLocatorCandidate, cssPath: string): Promise<number | null> {
   if (!cssPath) return null;
   try {
     const idx = await buildPwLocator(frame, c).evaluateAll((els, path) => {
       const target = document.querySelector(path as string);
-      return target ? (els as Element[]).indexOf(target) : -1;
+      if (!target) return -1;
+      const list = els as Element[];
+      const exact = list.indexOf(target);
+      if (exact >= 0) return exact;
+      return list.findIndex((el) => target.contains(el) || el.contains(target));
     }, cssPath);
     return idx >= 0 ? idx : null;
   } catch {

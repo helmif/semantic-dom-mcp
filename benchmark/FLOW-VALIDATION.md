@@ -58,6 +58,31 @@ Running the generated test is what exposed these; the Vitest suite had not.
    POST had `status: 200` and `failed: net::ERR_ABORTED`. A failure is now
    recorded only when no response arrived.
 
+## Second run: a real dev environment (2026-09-08)
+
+Same driver pattern against a real e-commerce seller platform's dev
+environment (identifying details omitted), guest add-to-cart: home → settle →
+product card → product page → "Tambah ke Keranjang" → diff. The listing
+renders after a `GET /api/v1/seller/products` call, the product opens by
+client-side navigation, and a guest click opens a login dialog.
+
+| Metric | Value |
+| --- | --- |
+| Generated test green against the live dev site, unmodified | 1 / 1 |
+| Behavioral facts taken from `observed` | listing API to await, product API to await, no navigation on click |
+| Diff after the click | 11 added (the login dialog), 2 changed (buttons that stopped being unique), 0 removed; 13 added before 0.5.1 dropped the two focus sentinels |
+| Home page after settle | 68 nodes, ~22,500 est. tokens |
+| Whole flow (8 calls) | ~39,600 est. tokens |
+
+Four tool fixes came out of it, shipped as 0.5.1: `.nth()` found by
+containment for cards located by heading text (the first click had failed
+under strict mode with "3 matches" and no index), cards named by heading,
+focus-trap sentinels dropped, `getByLabel` for `aria-label`-only elements.
+
+The home page number is the token problem in plain sight: about 330 tokens
+per node, most of it nulls, indentation, redundant fallbacks and duplicated
+text. Compact output is the v0.6 priority; see the roadmap.
+
 ## Reproduce
 
 ```bash

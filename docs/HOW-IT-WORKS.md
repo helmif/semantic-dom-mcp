@@ -125,7 +125,10 @@ An element is included if **any** of these hold:
 - its ARIA role (explicit or implied by tag/type) is interactive — button, link, checkbox, radio,
   tab, menuitem, switch, combobox, textbox, option — **or a notification/dialog surface**: alert,
   status, alertdialog, dialog (tests assert toasts and modals constantly);
-- it has a non-default `tabindex` (a custom focusable control).
+- it has a non-default `tabindex` and a name or content (a custom focusable control). A
+  focusable element with no role, no name and no content is a focus-trap sentinel, as dialog
+  libraries insert at both ends of a modal, and is skipped: it could only yield a structural CSS
+  locator.
 
 Everything else — layout wrappers, decorative divs — is excluded, keeping the output factual and
 small. One documented exception exists because real listings demanded it: with

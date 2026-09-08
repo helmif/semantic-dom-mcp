@@ -11,6 +11,27 @@ matching section.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-08
+
+Fixes from the first v0.5 run against a real dev environment (guest
+add-to-cart on an e-commerce seller platform; see
+`benchmark/FLOW-VALIDATION.md`).
+
+### Fixed
+
+- `.nth()` disambiguation is now found by containment, so a click-target
+  card located by its heading text (the locator resolves to the `<h3>`, not
+  the card) gets an index. Before, a product listed in three sections had
+  "3 matches" and no index, and the click failed under strict mode.
+- Click-target cards are named by their heading; the full card text stays in
+  `text_content` instead of becoming a 120-character accessible name.
+- Focus-trap sentinels (focusable, no role, no name, no content, as dialog
+  libraries insert at both ends of a modal) are no longer extracted. They
+  only ever produced structural CSS locators.
+- Elements carrying `aria-label` but no role get a `getByLabel` candidate;
+  Playwright's `getByLabel` matches `aria-label`, so the count engine can
+  verify it instead of falling back to structural CSS.
+
 ## [0.5.0] - 2026-09-07
 
 Flows, not pages. The single-shot tools see one page; real scenarios are
@@ -127,7 +148,8 @@ Initial public release on npm.
 - Parallel locator verification, bounded concurrency, document order kept.
 - Release workflow: pushing a `v*` tag publishes to npm.
 
-[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/helmif/semantic-dom-mcp/compare/v0.3.1...v0.3.2

@@ -305,10 +305,16 @@ export function __qaShouldInclude(el: Element, role: string | null): boolean {
   if (role && roleList.indexOf(role) >= 0) return true;
   // Non-default tabindex marks a custom focusable control. tabindex="-1" is
   // excluded: it is common on containers for programmatic focus, not controls.
+  // A focusable element with no role, no name and no content is a focus-trap
+  // sentinel (dialog libraries place one at each end of a modal), not a
+  // control: it would only yield a structural CSS locator nobody can use.
   var ti = el.getAttribute("tabindex");
   if (ti !== null) {
     var n = parseInt(ti, 10);
-    if (!isNaN(n) && n >= 0) return true;
+    if (!isNaN(n) && n >= 0) {
+      if (__qaCollapse(el.getAttribute("aria-label")) || __qaCollapse(el.getAttribute("aria-labelledby"))) return true;
+      return __qaHasContent(el);
+    }
   }
   return false;
 }
@@ -542,7 +548,9 @@ export function __qaCandidates(
     out.push({ strategy: "role", value: accessibleName, role: role });
   }
 
-  var labelText = __qaLabelText(el);
+  // getByLabel matches <label> text, aria-labelledby AND aria-label, so an
+  // aria-labelled element without a role still gets a semantic locator.
+  var labelText = __qaLabelText(el) || __qaCollapse(el.getAttribute("aria-label"));
   if (labelText) out.push({ strategy: "label", value: labelText });
 
   var placeholder = el.getAttribute("placeholder");
@@ -590,7 +598,11 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
   var cand = __qaCandidates(el, role, accessibleName, inShadow, cssPath);
   if (clickTarget) {
     var heading = __qaClickTargetHeading(el);
-    if (heading) cand.candidates.unshift({ strategy: "text", value: heading });
+    if (heading) {
+      cand.candidates.unshift({ strategy: "text", value: heading });
+      // The heading names the card; the full text blob stays in text_content.
+      accessibleName = heading;
+    }
     cand.note =
       (cand.note ? cand.note + " " : "") +
       "Included via the opt-in cursor:pointer click-target heuristic; the element has no native interactive semantics (consider adding a role or data-testid).";
