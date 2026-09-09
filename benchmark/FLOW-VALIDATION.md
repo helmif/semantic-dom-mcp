@@ -138,6 +138,19 @@ All four spec locators verified unique in-session. The outline of the home
 page was 1,049 characters and included the product grid as a `list` region,
 even though it is a `<div>` grid with no list semantics.
 
+### The one target not met, and why
+
+An external review asked for ambiguous primary locators to fall below 15% on
+a whole-page extraction. On a card grid that is not achievable honestly:
+ten product cards carry ten identical "Tambah ke Import List" buttons, so a
+page-level locator for one of them *is* ambiguous, and saying otherwise would
+be a false uniqueness claim. v0.8's answer is scoping rather than a better
+guess: extract one region (a dialog, a row, a card container) and the same
+control comes back unique inside it, verified. Where a card has no stable
+container hook (CSS-module class names are build-hashed), the node keeps
+`.nth()` guidance plus a note asking the frontend for a `data-testid` — the
+same conclusion a QA engineer reaches by hand.
+
 ### What the authenticated run showed
 
 On the authenticated variant dialog the structured table came back as
