@@ -26,7 +26,7 @@ function node(overrides: Partial<InteractiveNode> & { playwright: string; is_uni
 let seq = 0;
 function extract(nodes: InteractiveNode[], url = "http://x/a"): SemanticExtract {
   return {
-    schema_version: "1.4",
+    schema_version: "1.5",
     snapshot_id: ++seq,
     page_metadata: {
       title: "t",

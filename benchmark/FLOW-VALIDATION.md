@@ -107,6 +107,59 @@ unique on the real table, and the generated test uses it. Controls in plain
 `<div>` cards with no row, list item or test-id ancestor keep `.nth()`
 guidance; there is nothing factual to scope them by.
 
+## v0.8: outline first, on the same dev environment (2026-09-08)
+
+Prompted by an external Codex Desktop benchmark that found 0.7.0's full
+extraction 3.9x the size of the native accessibility tree on an admin
+table page, with 55% of primaries ambiguous. Same three authenticated seller
+pages as above, same session, same load-then-settled wait on both arms
+(the raw arm previously ignored `QA_MCP_STORAGE_STATE`; fixed).
+
+| Page | Aria snapshot (native tree) | Outline | Full extraction 0.7 → 0.8 | Full vs aria |
+| --- | ---: | ---: | ---: | ---: |
+| Seller home | 11,699 ch | 541 ch (−95%) | 45,807 → 26,922 ch | 2.3x |
+| Product detail | 13,904 ch | 2,133 ch (−85%) | 47,448 → 33,931 ch | 2.4x |
+| Batch cart | 2,595 ch | 458 ch (−82%) | 10,988 → 9,023 ch | 3.5x |
+
+### The same guest add-to-cart flow, the 0.8 way
+
+Six calls: session_open → outline → scoped listing (`roles: ["link"]`,
+`max_output_chars`) → `goto` the product with the button extraction in the
+same call → add-to-cart with the dialog diff in the same call →
+`session_verify_locators` on the four locators the spec uses.
+
+| Version | Flow cost |
+| --- | ---: |
+| 0.5 (full extraction per step) | ~39,200 est. tokens |
+| 0.6 (compact wire) | ~18,300 est. tokens |
+| **0.8 (outline first, scoped, act+extract)** | **~3,800 est. tokens** |
+
+All four spec locators verified unique in-session. The outline of the home
+page was 1,049 characters and included the product grid as a `list` region,
+even though it is a `<div>` grid with no list semantics.
+
+### What the authenticated run showed
+
+On the authenticated variant dialog the structured table came back as
+`Charizard: { "Harga Satuan": "Rp35.000 Rp45.000 22%", "Kuantitas": "0" }`,
+the quantity field as
+`getByRole('row', { name: 'Charizard' }).getByPlaceholder('0')`, and the
+confirm button, which shares its text with a button on the page behind it, as
+`locator('[role=dialog]').getByRole('button', { name: 'Tambah ke Keranjang' })`,
+unique inside the dialog. Entering a quantity flipped the confirm button's
+`is_disabled` from true to false in the diff, as expected.
+
+Clicking that confirm button then produced no request and no page change on
+this dev environment, across three different locator forms and on a second
+product. The server reported exactly that: no error, no request, no diff.
+The click reached the element (Playwright's actionability checks passed), so
+this is application behaviour on that environment, not an extraction defect —
+and "nothing happened" being visible in the output is the tool working.
+
+A full-page extraction is still larger than the aria snapshot, by design:
+it carries locators, verdicts and state that the tree does not. The way
+to spend fewer tokens is to not ask for the whole page.
+
 ## v0.6 wire format: before and after on the same dev environment (2026-09-08)
 
 Same pages, same flow, same day. Before = 0.5.1 (pretty-printed JSON, every

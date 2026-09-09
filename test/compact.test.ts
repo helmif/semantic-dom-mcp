@@ -27,7 +27,7 @@ function node(overrides: Partial<InteractiveNode> = {}): InteractiveNode {
 
 function extract(nodes: InteractiveNode[]): SemanticExtract {
   return {
-    schema_version: "1.4",
+    schema_version: "1.5",
     page_metadata: { title: "t", url: "http://x/", captured_at: new Date().toISOString(), node_count: nodes.length, frame_count: 1, truncated: false, notes: [] },
     interactive_nodes: nodes,
   };

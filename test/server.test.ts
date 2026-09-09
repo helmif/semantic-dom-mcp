@@ -34,7 +34,7 @@ async function callText(name: string, args: Record<string, unknown>): Promise<{ 
   return { text: r.content[0]!.text, isError: r.isError === true };
 }
 
-describe("MCP wire format (schema 1.3)", () => {
+describe("MCP wire format (schema 1.5)", () => {
   it("emits compact JSON with no null node fields, no indentation, and the documented omissions", async () => {
     fx.route(
       "/wire",
@@ -48,7 +48,7 @@ describe("MCP wire format (schema 1.3)", () => {
     expect(text).not.toMatch(/:null[,}]/); // no null node fields on the wire
     expect(text).not.toContain('"identity"'); // internal only
     const doc = JSON.parse(text) as { schema_version: string; interactive_nodes: Array<Record<string, unknown>> };
-    expect(doc.schema_version).toBe("1.4");
+    expect(doc.schema_version).toBe("1.5");
     const email = doc.interactive_nodes.find((n) => (n.primary_locator as { playwright: string }).playwright === "getByTestId('email')")!;
     expect(email).not.toHaveProperty("kind");
     expect(email).not.toHaveProperty("frame_path");
@@ -65,10 +65,32 @@ describe("MCP wire format (schema 1.3)", () => {
     }
   });
 
-  it("lists nine tools with annotations and returns structured errors for bad input", async () => {
+  it("compacts the extraction nested in a session_act then_extract report", async () => {
+    fx.route("/act-wire", htmlPage(`<button data-testid="go" onclick="document.body.insertAdjacentHTML('beforeend','<div role=alert>Oke</div>')">Go</button>`));
+    const open = JSON.parse((await callText("session_open", { url: `${fx.base}/act-wire`, wait_for: "load" })).text) as { session_id: string };
+    await callText("session_extract", { session_id: open.session_id });
+    const { text } = await callText("session_act", {
+      session_id: open.session_id,
+      actions: [{ type: "click", locator: { playwright: "getByTestId('go')" } }],
+      settle_ms: 100,
+      then_extract: { mode: "diff" },
+    });
+    expect(text).not.toContain("\n");
+    expect(text).not.toMatch(/:null[,}]/);
+    expect(text).not.toContain("nth-child(");
+    const report = JSON.parse(text) as { extract: { kind: string; added: Array<{ role: string }> } };
+    expect(report.extract.kind).toBe("diff");
+    expect(report.extract.added.map((n) => n.role)).toEqual(["alert"]);
+    await callText("session_close", { session_id: open.session_id });
+  });
+
+  it("lists the tools with annotations and returns structured errors for bad input", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["check_auth", "extract_semantic_dom", "extract_semantic_dom_after", "list_frames", "session_act", "session_close", "session_extract", "session_list", "session_open"].sort(),
+      [
+        "check_auth", "extract_outline", "extract_semantic_dom", "extract_semantic_dom_after", "get_conventions", "list_frames",
+        "session_act", "session_close", "session_extract", "session_list", "session_open", "session_verify_locators", "verify_locators",
+      ].sort(),
     );
     expect(tools.find((t) => t.name === "extract_semantic_dom")?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(tools.find((t) => t.name === "session_extract")?.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: false });

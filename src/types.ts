@@ -10,7 +10,8 @@ export type LocatorStrategy =
  * locator's `within` to act on the same element.
  */
 export interface LocatorScope {
-  kind: "row" | "listitem" | "test-id";
+  /** "css": the extraction's `scope` selector itself, rendered as locator('<selector>'). */
+  kind: "row" | "listitem" | "test-id" | "css";
   value: string;
 }
 
@@ -161,8 +162,10 @@ export interface SemanticExtract {
    * node fields are omitted, fallbacks appear only when needed. Internally
    * the shape stays full and fixed.
    * 1.4 adds Locator.within (scoped locators).
+   * 1.5 adds outlines, structured tables/dialogs, scoped and budgeted
+   *     extraction (`tables`, `dialogs`, `omitted` on extractions).
    */
-  schema_version: "1.4";
+  schema_version: "1.5";
   page_metadata: PageMetadata;
   interactive_nodes: InteractiveNode[];
   /**
@@ -173,6 +176,62 @@ export interface SemanticExtract {
   observed?: Observed;
   /** Present on session snapshots; feeds `diff_against` in session_extract. */
   snapshot_id?: number;
+  /** Structured tables inside the extraction scope (schema 1.5, on request). */
+  tables?: TableData[];
+  /** Open dialogs inside the extraction scope as label/value pairs (schema 1.5, on request). */
+  dialogs?: DialogData[];
+  /** Nodes dropped by `max_output_chars`, never silently (schema 1.5). */
+  omitted?: { nodes: number; reason: string };
+}
+
+/* ------------------------------------------------------------------ */
+/* Outline and structured data (schema 1.5)                             */
+/* ------------------------------------------------------------------ */
+
+export interface OutlineRegion {
+  kind: string;                // header, nav, main, form, table, list, dialog, region…
+  name: string | null;
+  /** CSS selector accepted by `scope` on the extraction tools. */
+  selector: string;
+  interactive_count: number;
+  is_visible: boolean;
+  row_count?: number;
+  item_count?: number;
+}
+
+export interface TableData {
+  selector: string;
+  name: string | null;
+  headers: string[];
+  row_count: number;
+  /** Row identity is the cell unique among sibling rows: pass it to getByRole('row', { name }). */
+  rows: Array<{ identity: string | null; cells: Record<string, string> }>;
+  truncated: boolean;
+}
+
+export interface DialogData {
+  selector: string;
+  name: string | null;
+  is_visible: boolean;
+  /** Collapsed text, capped at 400 characters. */
+  text: string;
+  /** Label/value pairs found in the dialog (<dl>, two-part rows). */
+  fields: Record<string, string>;
+}
+
+/** The page as a map: what is there and where to scope next. A few thousand characters. */
+export interface SemanticOutline {
+  schema_version: "1.5";
+  kind: "outline";
+  page_metadata: { title: string; url: string; captured_at: string; notes: string[] };
+  interactive_count: number;
+  regions: OutlineRegion[];
+  tables: TableData[];
+  dialogs: DialogData[];
+  /** Live-region text currently shown (toasts, banners). */
+  alerts: string[];
+  snapshot_id?: number;
+  observed?: Observed;
 }
 
 /* ------------------------------------------------------------------ */
@@ -199,7 +258,7 @@ export interface ChangedNode {
 }
 
 export interface SemanticDiff {
-  schema_version: "1.4";
+  schema_version: "1.5";
   kind: "diff";
   from_snapshot: number;
   to_snapshot: number;

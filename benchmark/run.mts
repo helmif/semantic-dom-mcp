@@ -24,7 +24,8 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { extractSemanticDom, closeBrowser } from "../src/browser.js";
+import { existsSync } from "node:fs";
+import { extractOutline, extractSemanticDom, closeBrowser, trackSettle } from "../src/browser.js";
 import { compactForWire } from "../src/compact.js";
 import type { SemanticExtract } from "../src/types.js";
 
@@ -47,6 +48,10 @@ interface Row {
   title: string;
   rawChars: number;
   cleanedChars: number;
+  /** Playwright's aria snapshot of <body>: the native accessibility representation browser tools give an agent. */
+  ariaChars: number;
+  outlineChars: number;
+  outlineMs: number;
   jsonChars: number;
   nodes: number;
   uniquePrimaries: number;
@@ -56,18 +61,30 @@ interface Row {
   extractMs: number;
 }
 
-async function captureRawHtml(url: string): Promise<{ raw: string; cleaned: string }> {
+/**
+ * Parity with the MCP arm: same storageState (QA_MCP_STORAGE_STATE), same
+ * wait (load + settled). Also captures Playwright's aria snapshot, the
+ * closest public equivalent of the accessibility tree that native browser
+ * tools (Playwright MCP, Codex/Claude browser tools) hand an agent.
+ */
+async function captureRawHtml(url: string): Promise<{ raw: string; cleaned: string; aria: string }> {
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle", timeout: 45_000 }).catch(() => undefined);
+    const storageState = process.env.QA_MCP_STORAGE_STATE;
+    if (storageState && !existsSync(storageState)) throw new Error(`QA_MCP_STORAGE_STATE '${storageState}' does not exist`);
+    const context = await browser.newContext(storageState ? { storageState } : {});
+    const page = await context.newPage();
+    const settle = trackSettle(page);
+    await page.goto(url, { waitUntil: "load", timeout: 45_000 });
+    await settle.wait();
     const raw = await page.content();
     const cleaned = await page.evaluate(() => {
       const clone = document.documentElement.cloneNode(true) as HTMLElement;
       clone.querySelectorAll("script,style,svg,noscript,link,meta,template").forEach((e) => e.remove());
       return clone.outerHTML.replace(/\s+/g, " ");
     });
-    return { raw, cleaned };
+    const aria = await page.locator("body").ariaSnapshot();
+    return { raw, cleaned, aria };
   } finally {
     await browser.close();
   }
@@ -83,19 +100,24 @@ function stripVolatile(extract: SemanticExtract): unknown {
 const rows: Row[] = [];
 for (const url of urls) {
   console.error(`\n=== ${url}`);
-  const { raw, cleaned } = await captureRawHtml(url);
+  const { raw, cleaned, aria } = await captureRawHtml(url);
+
+  const tOutline = Date.now();
+  const outline = await extractOutline({ url, wait_for: "auto" });
+  const outlineMs = Date.now() - tOutline;
+  const outlineChars = JSON.stringify(outline).length;
 
   const t0 = Date.now();
   const first = await extractSemanticDom({
     url,
-    wait_for: "networkidle",
+    wait_for: "auto",
     include_hidden: true,
     max_nodes: 5000,
   });
   const extractMs = Date.now() - t0;
   const second = await extractSemanticDom({
     url,
-    wait_for: "networkidle",
+    wait_for: "auto",
     include_hidden: true,
     max_nodes: 5000,
   });
@@ -123,6 +145,9 @@ for (const url of urls) {
     title: label,
     rawChars: raw.length,
     cleanedChars: cleaned.length,
+    ariaChars: aria.length,
+    outlineChars,
+    outlineMs,
     jsonChars: json.length,
     nodes: first.page_metadata.node_count,
     uniquePrimaries,
@@ -132,7 +157,7 @@ for (const url of urls) {
     extractMs,
   });
   console.error(
-    `raw ${fmt(raw.length)} ch | cleaned ${fmt(cleaned.length)} ch | semantic ${fmt(json.length)} ch | ` +
+    `raw ${fmt(raw.length)} ch | cleaned ${fmt(cleaned.length)} ch | aria ${fmt(aria.length)} ch | outline ${fmt(outlineChars)} ch (${outlineMs}ms) | semantic ${fmt(json.length)} ch | ` +
       `${first.page_metadata.node_count} nodes | deterministic=${deterministic} | ${extractMs}ms`,
   );
 }
@@ -149,15 +174,17 @@ lines.push(`_Generated ${new Date().toISOString()} by \`npm run bench\`. Token c
 lines.push("");
 lines.push("## Context payload an agent must consume");
 lines.push("");
-lines.push("| Page | Raw HTML | Cleaned HTML¹ | Semantic JSON | Reduction vs raw | Reduction vs cleaned |");
-lines.push("| --- | ---: | ---: | ---: | ---: | ---: |");
+lines.push("| Page | Raw HTML | Cleaned HTML¹ | Aria snapshot² | Outline (v0.8) | Full Semantic JSON | Outline vs aria | Full vs cleaned |");
+lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
 for (const r of rows) {
   lines.push(
-    `| ${cell(r.title)} | ${fmt(r.rawChars)} ch (~${fmt(estTokens(r.rawChars))} tok) | ${fmt(r.cleanedChars)} ch (~${fmt(estTokens(r.cleanedChars))} tok) | ${fmt(r.jsonChars)} ch (~${fmt(estTokens(r.jsonChars))} tok) | **${reduction(r.jsonChars, r.rawChars)}** | **${reduction(r.jsonChars, r.cleanedChars)}** |`,
+    `| ${cell(r.title)} | ${fmt(r.rawChars)} ch (~${fmt(estTokens(r.rawChars))} tok) | ${fmt(r.cleanedChars)} ch (~${fmt(estTokens(r.cleanedChars))} tok) | ${fmt(r.ariaChars)} ch (~${fmt(estTokens(r.ariaChars))} tok) | ${fmt(r.outlineChars)} ch (~${fmt(estTokens(r.outlineChars))} tok) | ${fmt(r.jsonChars)} ch (~${fmt(estTokens(r.jsonChars))} tok) | **${reduction(r.outlineChars, r.ariaChars)}** | **${reduction(r.jsonChars, r.cleanedChars)}** |`,
   );
 }
 lines.push("");
 lines.push("¹ Scripts, styles, svg, meta and whitespace stripped — the fairest manual alternative to pasting the DOM.");
+lines.push("");
+lines.push("² Playwright's `ariaSnapshot()` of `<body>`: the accessibility-tree representation native browser tools give an agent. It carries no locators, no state and no verification; the outline is the MCP's comparable first look, from which the agent scopes a full extraction to one region. Both arms use the same storageState and the same load-then-settled wait.");
 lines.push("");
 lines.push("## Locator evidence (the accuracy layer)");
 lines.push("");

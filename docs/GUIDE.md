@@ -111,6 +111,30 @@ await Promise.all([
 await expect(page).toHaveURL(/\/dashboard$/);
 ```
 
+## 4b2. Start with an outline, extract one region
+
+On a page the agent has not seen, `extract_outline` (or `session_extract`
+with `mode: "outline"`) costs a few hundred to a few thousand characters and
+says what is there: regions with a `selector`, tables with headers, row
+identity and cells, open dialogs with label/value fields, and current alert
+text. The agent then extracts one region:
+
+```json
+{ "session_id": "s_…", "scope": "main table", "roles": ["button"], "visible_only": true }
+```
+
+Inside a scope, an ambiguous locator becomes `locator('<scope>')…`, verified
+unique within it. `max_output_chars` caps the node list and reports what was
+dropped in `omitted`; `include_tables` attaches the structured table and
+dialog data for value assertions. A `scope` that matches several elements
+resolves to the last visible one, so `[role=dialog]` means the dialog on
+top. Prefer the unique selectors the outline reports.
+
+After writing the test, run `verify_locators` (or
+`session_verify_locators`) with the expressions in the spec. It counts each
+against the live page and reports matches, uniqueness and the first matched
+element, plus a summary. The same call is the drift check to run in CI.
+
 ## 4c. Multi-step flows: sessions and diffs
 
 For a scenario that spans pages (login → cart → checkout), a fresh navigation
@@ -133,8 +157,10 @@ cart, go to checkout, and write the test."* The agent's calls look like:
 
 Action types: `fill`, `click`, `press`, `select` (choose a `<select>`
 option), `goto` (navigate within the allowlist; absolute URL), `wait`. Max 20
-per call. When a node's locator carries `within` (scoped to a row, list
-item or test-id container), pass the same `within` in the action locator. Add `secret: true` to a `fill` whose value must never appear in any
+per call. Pass a node's `playwright` expression verbatim as the locator:
+`{ "type": "click", "locator": { "playwright": "getByRole('row', { name: 'Charizard' }).getByPlaceholder('0')" } }`.
+Add `then_extract` to get the diff (or a scoped extraction, or an outline) in
+the same call. Add `secret: true` to a `fill` whose value must never appear in any
 output (password fields are detected automatically).
 
 Rules the server enforces: a session that leaves the allowlisted hosts is
@@ -174,6 +200,7 @@ repo too, and regenerate when the session expires.
 | `storage_state_missing` | `QA_MCP_STORAGE_STATE` points at a file that isn't there — regenerate it (§5). |
 | Extraction returns a login page instead of the requested page | Session expired. Run the `check_auth` tool to confirm (`looks_logged_out: true`), then regenerate the storageState (§5). |
 | Locator in generated test not in the extraction | The agent ignored the rules. Reject the PR; that is exactly what review is for. |
+| `invalid_locator` | The `playwright` string is outside the grammar the server emits (a `.click()`, `.first()`, double quotes). Paste the expression exactly as an extraction returned it. |
 | `session_busy` | Two calls hit one session at once (a client that parallelises tool calls). Calls on a session are serial; retry after the other call returns. |
 | `action_failed` | The locator did not resolve or Playwright refused the action; the message ends with the reason from Playwright's call log (`intercepts pointer events`, `not visible`, `strict mode violation … resolved to N elements`). Take locators from the extraction and apply its `.nth()` guidance. |
 | `wait_selector_timeout` / `wait_selector_after_timeout` | The selector never appeared (15 s). Verify it against an extraction, or extract without it to see what the page shows. |

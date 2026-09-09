@@ -19,18 +19,23 @@ import {
   getBrowser,
   navigateForExtraction,
   newContext,
+  outlineFromPage,
   pageTitle,
   performAction,
   snapshotPage,
+  summarizeVerdicts,
+  verifyLocatorsOnPage,
   waitAfterActions,
   type ExtractInput,
+  type LocatorVerdict,
   type PageAction,
+  type SnapshotOptions,
   type ViewportPreset,
 } from "./browser.js";
 import { diffExtracts } from "./diff.js";
 import { observePage, type Observer, type ObserverMark } from "./observe.js";
 import { redactDeep } from "./secrets.js";
-import type { Observed, SemanticDiff, SemanticExtract } from "./types.js";
+import type { Observed, SemanticDiff, SemanticExtract, SemanticOutline } from "./types.js";
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -260,6 +265,8 @@ export interface SessionActInput {
   actions: PageAction[];
   settle_ms: number;
   wait_selector_after?: string | undefined;
+  /** Take a snapshot (or diff/outline) in the same call — one round trip per step. */
+  then_extract?: (Omit<SessionExtractOptions, "mode"> & { mode?: "diff" | "nodes" | "outline" | undefined }) | undefined;
 }
 
 export interface SessionActReport {
@@ -270,6 +277,8 @@ export interface SessionActReport {
   /** What the page did while THESE actions ran. */
   observed: Observed;
   expires_at: string;
+  /** Present when then_extract was given. */
+  extract?: SemanticExtract | SemanticDiff | SemanticOutline;
 }
 
 export async function actInSession(input: SessionActInput): Promise<SessionActReport> {
@@ -294,7 +303,7 @@ export async function actInSession(input: SessionActInput): Promise<SessionActRe
     }
     await guardAllowlist(s, "after the actions");
     s.title = await pageTitle(s.page);
-    return redactDeep({
+    const report: SessionActReport = redactDeep({
       session_id: s.id,
       url: s.page.url(),
       title: s.title,
@@ -302,6 +311,15 @@ export async function actInSession(input: SessionActInput): Promise<SessionActRe
       observed: s.observer.since(mark),
       expires_at: expiresAt(s),
     });
+    if (input.then_extract) {
+      const { mode, ...rest } = input.then_extract;
+      report.extract = await snapshotInSession(s, {
+        ...rest,
+        ...(mode === "outline" ? { mode: "outline" } : {}),
+        ...(mode === "diff" || mode === undefined ? { diff_against: rest.diff_against ?? "previous" } : {}),
+      });
+    }
+    return report;
   });
 }
 
@@ -309,16 +327,32 @@ export async function actInSession(input: SessionActInput): Promise<SessionActRe
 /* session_extract                                                       */
 /* ------------------------------------------------------------------ */
 
-export interface SessionExtractInput extends Pick<ExtractInput, "include_hidden" | "max_nodes" | "include_click_targets"> {
-  session_id: string;
+export interface SessionExtractOptions extends Partial<SnapshotOptions> {
   /** Snapshot id to diff against (from a prior session_extract), or "previous". */
   diff_against?: number | "previous" | undefined;
+  /** "outline": the page as a map (regions, tables, dialogs) instead of nodes. */
+  mode?: "nodes" | "outline" | undefined;
 }
 
-export async function extractInSession(input: SessionExtractInput): Promise<SemanticExtract | SemanticDiff> {
+export interface SessionExtractInput extends SessionExtractOptions {
+  session_id: string;
+}
+
+export async function extractInSession(input: SessionExtractInput): Promise<SemanticExtract | SemanticDiff | SemanticOutline> {
   const s = await lookup(input.session_id);
-  return locked(s, async () => {
+  return locked(s, (): Promise<SemanticExtract | SemanticDiff | SemanticOutline> => snapshotInSession(s, input));
+}
+
+/** Shared by session_extract and session_act(then_extract); caller holds the lock. */
+async function snapshotInSession(s: Session, input: SessionExtractOptions): Promise<SemanticExtract | SemanticDiff | SemanticOutline> {
+  {
     await guardAllowlist(s, "before the snapshot");
+    if (input.mode === "outline") {
+      // Outlines do not consume the recording or a snapshot id: they are maps, not states to diff.
+      const outline = await outlineFromPage(s.page, input.scope, [`Session outline of '${s.id}' after ${s.actionsPerformed} action(s).`]);
+      const observed = redactDeep(s.observer.since(s.baseline));
+      return { ...outline, ...(observed.navigations.length + observed.requests.length > 0 ? { observed } : {}) };
+    }
     // Resolve the diff target first: a bad id must not consume a snapshot.
     const nextId = s.snapshotsTaken + 1;
     let fromId: number | undefined;
@@ -336,7 +370,17 @@ export async function extractInSession(input: SessionExtractInput): Promise<Sema
     }
 
     // Snapshot first; only a successful snapshot consumes the recording and an id.
-    const body = await snapshotPage(s.page, input, [`Session snapshot #${nextId} after ${s.actionsPerformed} action(s).`]);
+    const opts: SnapshotOptions = {
+      include_hidden: input.include_hidden ?? true,
+      max_nodes: input.max_nodes ?? 5000,
+      include_click_targets: input.include_click_targets,
+      scope: input.scope,
+      roles: input.roles,
+      visible_only: input.visible_only,
+      max_output_chars: input.max_output_chars,
+      include_tables: input.include_tables,
+    };
+    const body = await snapshotPage(s.page, opts, [`Session snapshot #${nextId} after ${s.actionsPerformed} action(s).`]);
     const observed = redactDeep(s.observer.since(s.baseline));
     s.observer.compact();
     s.baseline = s.observer.mark();
@@ -352,6 +396,16 @@ export async function extractInSession(input: SessionExtractInput): Promise<Sema
 
     if (fromId === undefined) return extract;
     return diffExtracts(base!, extract);
+  }
+}
+
+/** verify_locators against an open session's current page. */
+export async function verifyInSession(sessionId: string, locators: string[]): Promise<{ session_id: string; url: string; results: LocatorVerdict[]; summary: ReturnType<typeof summarizeVerdicts> }> {
+  const s = await lookup(sessionId);
+  return locked(s, async () => {
+    await guardAllowlist(s, "before verifying locators");
+    const results = await verifyLocatorsOnPage(s.page, locators);
+    return { session_id: s.id, url: s.page.url(), results, summary: summarizeVerdicts(results) };
   });
 }
 

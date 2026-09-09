@@ -1,10 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { checkAuth, extractAfterActions, extractSemanticDom, listFrames, ExtractError } from "./browser.js";
+import { checkAuth, extractAfterActions, extractOutline, extractSemanticDom, listFrames, verifyLocators, ExtractError } from "./browser.js";
 import { renderWritePlaywrightTestPrompt, TEAM_CONVENTIONS } from "./conventions.js";
 import { compactForWire } from "./compact.js";
 import { redactString } from "./secrets.js";
-import { actInSession, closeSession, extractInSession, listSessions, openSession } from "./session.js";
+import { actInSession, closeSession, extractInSession, listSessions, openSession, verifyInSession } from "./session.js";
 
 /**
  * Input schema for `extract_semantic_dom`.
@@ -49,18 +49,56 @@ const extractInputSchema = z
         "Opt-in heuristic: also include cursor:pointer elements with content that match no other rule " +
           "(JS-click product cards without anchors/roles/test-ids). Heuristic nodes carry a context_note.",
       ),
+    scope: z
+      .string()
+      .optional()
+      .describe("CSS selector to extract within — take it from an outline region's `selector` (e.g. 'main table', '[role=\"dialog\"]'). Everything outside is skipped."),
+    roles: z
+      .array(z.string())
+      .optional()
+      .describe("Keep only nodes with these roles or tags (e.g. ['button','textbox','row'])."),
+    visible_only: z.boolean().default(false).describe("Skip hidden nodes entirely."),
+    max_output_chars: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Budget for the node list; nodes past it are dropped in document order and counted in `omitted` (never silent)."),
+    include_tables: z
+      .boolean()
+      .default(false)
+      .describe("Attach structured `tables` (headers, row identity, cells) and `dialogs` (label/value fields) inside the scope, for value assertions."),
+  })
+  .strict();
+
+const outlineInputSchema = extractInputSchema.pick({ url: true, wait_for: true, wait_selector: true, viewport: true, scope: true }).strict();
+
+const verifyInputSchema = extractInputSchema
+  .pick({ url: true, wait_for: true, wait_selector: true, viewport: true })
+  .extend({
+    locators: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(200)
+      .describe("Playwright expressions as written in the test (getByRole(...), getByTestId(...), scoped forms, .nth(i))."),
   })
   .strict();
 
 const actionLocatorSchema = z
   .object({
+    playwright: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("A `playwright` expression exactly as an extraction returned it (scoped forms and .nth included). When given, strategy/value are not needed."),
     strategy: z
       .enum(["test-id", "role", "label", "placeholder", "text", "id", "css"])
-      .describe("Locator strategy, matching the strategies in extraction output."),
-    value: z.string().describe("The locator value (test id, accessible name, label, selector...). Empty for a bare role inside `within`."),
+      .default("css")
+      .describe("Locator strategy, matching the strategies in extraction output (ignored when `playwright` is given)."),
+    value: z.string().default("").describe("The locator value (test id, accessible name, label, selector...). Empty for a bare role inside `within`."),
     role: z.string().optional().describe("ARIA role — required when strategy is 'role'."),
     within: z
-      .object({ kind: z.enum(["row", "listitem", "test-id"]), value: z.string().min(1) })
+      .object({ kind: z.enum(["row", "listitem", "test-id", "css"]), value: z.string().min(1) })
       .strict()
       .optional()
       .describe("Scope to a container first; copy the extraction's `within` verbatim."),
@@ -71,7 +109,10 @@ const actionLocatorSchema = z
       .optional()
       .describe("Optional .nth(i) index from the extraction's disambiguation guidance."),
   })
-  .strict();
+  .strict()
+  .refine((l) => l.playwright !== undefined || l.value !== "" || l.strategy === "role", {
+    message: "Give either `playwright` (an expression from an extraction) or strategy + value.",
+  });
 
 const actionSchema = z.discriminatedUnion("type", [
   z
@@ -136,15 +177,9 @@ const sessionOpenInputSchema = extractInputSchema
   .pick({ url: true, wait_for: true, wait_selector: true, viewport: true })
   .strict();
 
-const sessionActInputSchema = extractAfterInputSchema
-  .pick({ actions: true, settle_ms: true, wait_selector_after: true })
-  .extend({ session_id: sessionIdField })
-  .strict();
-
-const sessionExtractInputSchema = extractInputSchema
-  .pick({ include_hidden: true, max_nodes: true, include_click_targets: true })
+const sessionExtractOptions = extractInputSchema
+  .pick({ include_hidden: true, max_nodes: true, include_click_targets: true, scope: true, roles: true, visible_only: true, max_output_chars: true, include_tables: true })
   .extend({
-    session_id: sessionIdField,
     diff_against: z
       .union([z.number().int().positive(), z.literal("previous")])
       .optional()
@@ -152,6 +187,31 @@ const sessionExtractInputSchema = extractInputSchema
         "Return only what changed since that snapshot_id (or 'previous' = the last snapshot in this session) " +
           "instead of the full extraction — added/removed/changed nodes plus the behavior observed in between.",
       ),
+    mode: z
+      .enum(["nodes", "outline"])
+      .default("nodes")
+      .describe("'outline': the page as a map (regions with `selector`, structured tables, dialogs, alerts) in a few thousand characters; does not consume a snapshot id."),
+  });
+
+const sessionActInputSchema = extractAfterInputSchema
+  .pick({ actions: true, settle_ms: true, wait_selector_after: true })
+  .extend({
+    session_id: sessionIdField,
+    then_extract: sessionExtractOptions
+      .extend({ mode: z.enum(["diff", "nodes", "outline"]).default("diff").describe("'diff' (default): what changed since the previous snapshot.") })
+      .strict()
+      .optional()
+      .describe("Also snapshot in this call — one round trip per step. Default mode 'diff' against the previous snapshot; supports scope/roles/visible_only/max_output_chars/include_tables."),
+  })
+  .strict();
+
+const sessionVerifyInputSchema = z
+  .object({ session_id: sessionIdField, locators: verifyInputSchema.shape.locators })
+  .strict();
+
+const sessionExtractInputSchema = sessionExtractOptions
+  .extend({
+    session_id: sessionIdField,
   })
   .strict();
 
@@ -199,7 +259,13 @@ function guarded<A>(name: string, fn: (args: A) => Promise<unknown>): (args: A) 
 }
 
 const SERVER_INSTRUCTIONS =
-  "Output is compact JSON (schema 1.4). An absent node property is null (not applicable; never read it as false). " +
+  "Start cheap: `extract_outline` (or session_extract mode:'outline') maps the page — regions with a `selector`, " +
+  "structured tables (row identity + cells) and dialogs (label/value fields) — in a few thousand characters. Then " +
+  "extract only the region you need with `scope` (plus roles/visible_only/max_output_chars), and act with " +
+  "`session_act` passing `then_extract` so each step is one round trip. Paste any returned `playwright` expression " +
+  "back as an action locator (`locator: { playwright: \"...\" }`); no re-parsing. After writing the test, run " +
+  "`verify_locators` with the expressions in the spec. " +
+  "Output is compact JSON (schema 1.5). An absent node property is null (not applicable; never read it as false). " +
   "A locator with `within` is scoped to a container (a table row by name, a list item by text, or a test-id " +
   "ancestor); its `playwright` expression is complete, and an action locator takes the same `within` verbatim. " +
   "Absent frame_path = main document, absent in_shadow = light DOM, absent fallback_locators = nothing worth " +
@@ -215,7 +281,7 @@ const SERVER_INSTRUCTIONS =
 
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "semantic-dom-mcp", version: "0.7.0" },
+    { name: "semantic-dom-mcp", version: "0.8.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -275,6 +341,43 @@ export function createServer(): McpServer {
     guarded("check_auth", (args) => checkAuth(args.url, args.wait_for)),
   );
 
+  server.registerTool(
+    "extract_outline",
+    {
+      description:
+        "The page as a MAP, a few thousand characters: landmark regions (header/nav/main/forms/tables/lists/dialogs) each " +
+        "with a `selector` you can pass as `scope` to extract_semantic_dom / session_extract, structured tables " +
+        "(headers, row identity for getByRole('row', { name }), cells) and open dialogs (label/value fields), plus " +
+        "current alert text. Start here on any page you have not seen; then extract one region.",
+      inputSchema: outlineInputSchema,
+      annotations: READ_ONLY,
+    },
+    guarded("extract_outline", extractOutline),
+  );
+
+  server.registerTool(
+    "verify_locators",
+    {
+      description:
+        "Count every given Playwright expression against the live page (same engine that verified the extraction). " +
+        "Use after writing a test: paste the spec's getBy*/locator expressions and get matches, uniqueness, and the " +
+        "first matched element per expression, plus a summary. Also the drift check to run in CI against a page.",
+      inputSchema: verifyInputSchema,
+      annotations: READ_ONLY,
+    },
+    guarded("verify_locators", verifyLocators),
+  );
+
+  server.registerTool(
+    "get_conventions",
+    {
+      description: "The team's Playwright test-writing conventions as text (same content as the write_playwright_test prompt), for clients that do not surface MCP prompts.",
+      inputSchema: z.object({}).strict(),
+      annotations: READ_ONLY,
+    },
+    guarded("get_conventions", async () => ({ conventions: TEAM_CONVENTIONS })),
+  );
+
   /* ---------------- sessions (v0.5: flows, not pages) ---------------- */
 
   server.registerTool(
@@ -299,7 +402,8 @@ export function createServer(): McpServer {
         "main frame. Returns the page's resulting URL/title and `observed`: main-frame navigations, xhr/fetch " +
         "requests (method, path, status — bodies and query strings never captured), console errors, dialogs " +
         "(auto-dismissed) and popups (recorded, closed). These are the facts for waitForURL/waitForResponse. " +
-        "Derive action locators from a prior extraction. If the actions leave the allowlisted hosts the " +
+        "Derive action locators from a prior extraction (paste its `playwright` expression). Pass `then_extract` to get " +
+        "the diff (or a scoped extraction / outline) in the same call. If the actions leave the allowlisted hosts the " +
         "session is closed and nothing further is extracted.",
       inputSchema: sessionActInputSchema,
       annotations: ACTS_ON_PAGE,
@@ -322,6 +426,16 @@ export function createServer(): McpServer {
       annotations: READS_CONSUMES,
     },
     guarded("session_extract", extractInSession),
+  );
+
+  server.registerTool(
+    "session_verify_locators",
+    {
+      description: "verify_locators against an open session's current page (after acting, without a fresh navigation).",
+      inputSchema: sessionVerifyInputSchema,
+      annotations: READ_ONLY,
+    },
+    guarded("session_verify_locators", (args) => verifyInSession(args.session_id, args.locators)),
   );
 
   server.registerTool(

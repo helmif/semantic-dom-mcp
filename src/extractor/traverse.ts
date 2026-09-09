@@ -18,7 +18,7 @@
 
 /** Candidate locator data gathered in-page; expressions are built server-side. */
 export interface RawScope {
-  kind: "row" | "listitem" | "test-id";
+  kind: "row" | "listitem" | "test-id" | "css";
   value: string;
 }
 
@@ -96,6 +96,12 @@ export interface InPageOptions {
   /** Opt-in heuristic: include cursor:pointer boundary elements with content
    * (JS-click cards) that match no other inclusion rule. */
   includeClickTargets?: boolean;
+  /** CSS selector of the element to extract within (first match); the rest of the page is skipped. */
+  scopeSelector?: string;
+  /** Keep only nodes whose role or tag is listed. */
+  roles?: string[];
+  /** Skip hidden nodes in-page (cheaper than filtering after locator verification). */
+  visibleOnly?: boolean;
 }
 
 /** Inherited ancestor visibility flags carried down the traversal stack. */
@@ -560,6 +566,7 @@ export function __qaCandidates(
   accessibleName: string | null,
   inShadow: boolean,
   cssPath: string,
+  rootScope?: RawScope | null,
 ): { candidates: RawLocatorCandidate[]; note: string | null } {
   var out: RawLocatorCandidate[] = [];
   var noteParts: string[] = [];
@@ -614,18 +621,26 @@ export function __qaCandidates(
   // getByRole('radio') inside its row) and disambiguate repeated ones (one
   // quantity field per row). Placed after the unscoped candidates so a unique
   // unscoped locator still wins, before id/css so structure stays last.
+  var semantic = out.filter(function (c) {
+    return c.strategy === "role" || c.strategy === "label" || c.strategy === "placeholder" || c.strategy === "text";
+  });
   var scope = __qaScope(el);
-  if (scope) {
-    var semantic = out.filter(function (c) {
-      return c.strategy === "role" || c.strategy === "label" || c.strategy === "placeholder" || c.strategy === "text";
-    });
+  // The extraction's own scope (a dialog, a form) is a container too: a
+  // locator unique inside it is what a test scoped to that region uses.
+  // Skip when the row/list/test-id container already sits inside the scope
+  // root... no: both are emitted, the nearer container first.
+  var scopes: RawScope[] = [];
+  if (scope) scopes.push(scope);
+  if (rootScope && (!scope || scope.kind !== "test-id")) scopes.push(rootScope);
+  for (var sci = 0; sci < scopes.length; sci++) {
+    var container = scopes[sci]!;
     if (semantic.length === 0 && role && authorNamedOnly.indexOf(role) < 0) {
       // Nameless control: bare role inside the container.
-      out.push({ strategy: "role", value: "", role: role, within: scope });
+      out.push({ strategy: "role", value: "", role: role, within: container });
     }
     for (var si = 0; si < semantic.length; si++) {
       var sc = semantic[si]!;
-      var scoped: RawLocatorCandidate = { strategy: sc.strategy, value: sc.value, within: scope };
+      var scoped: RawLocatorCandidate = { strategy: sc.strategy, value: sc.value, within: container };
       if (sc.role !== undefined) scoped.role = sc.role;
       out.push(scoped);
     }
@@ -673,16 +688,84 @@ export function __qaScope(el: Element): RawScope | null {
   return null;
 }
 
-/** First short, non-empty text among the container's parts; else its own text, capped. */
+/**
+ * Text that identifies this container among its siblings: the first short
+ * part (a cell, a child) whose text no sibling container shares. A status
+ * badge or a date repeated on every row is skipped; the product name or SKU
+ * is chosen. Falls back to the first short part, then to the own text.
+ */
 export function __qaScopeText(container: Element, partSelector: string): string | null {
+  var siblings: Element[] = [];
+  var parent = container.parentElement;
+  if (parent) {
+    var kids = parent.children;
+    for (var k = 0; k < kids.length; k++) if (kids[k] !== container) siblings.push(kids[k]!);
+  }
   var parts = container.querySelectorAll(partSelector);
+  var firstShort: string | null = null;
   for (var i = 0; i < parts.length; i++) {
     var t = __qaCollapse(parts[i]!.textContent);
-    if (t && t.length >= 2 && t.length <= 40) return t;
+    if (!t || t.length < 2 || t.length > 60) continue;
+    if (firstShort === null) firstShort = t;
+    var shared = false;
+    for (var s = 0; s < siblings.length; s++) {
+      if (__qaCollapse(siblings[s]!.textContent).indexOf(t) >= 0) {
+        shared = true;
+        break;
+      }
+    }
+    if (!shared) return t;
   }
+  if (firstShort !== null) return firstShort;
   var own = __qaCollapse(container.textContent);
   if (!own) return null;
   return own.length > 40 ? own.slice(0, 40) : own;
+}
+
+/**
+ * The element a `scope` selector means: the LAST visible match, else the
+ * first match. Dialog libraries keep a closed dialog in the DOM and stack an
+ * open one on top of another, appended later; "[role=dialog]" must resolve
+ * to the one the user is looking at. For anything else, pass a selector the
+ * outline reported as unique.
+ */
+export function __qaScopeRoot(selector: string): Element | null {
+  var all = document.querySelectorAll(selector);
+  var lastVisible: Element | null = null;
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i]!;
+    if (__qaVisibility(el, __qaAncestorFlags(el)).visible) lastVisible = el;
+  }
+  return lastVisible || (all.length > 0 ? all[0]! : null);
+}
+
+/** Display-none state of an element's ancestors, for a traversal that starts below the root. */
+export function __qaAncestorFlags(el: Element): AncestorFlags {
+  var cur = el.parentElement;
+  while (cur) {
+    if (window.getComputedStyle(cur).display === "none") return { displayNone: true };
+    cur = cur.parentElement;
+  }
+  return { displayNone: false };
+}
+
+/**
+ * For a form control with no accessible name: the nearest text before it in
+ * its form-item container, as a HINT only. Component libraries render the
+ * visible label without associating it, so this is not a locator source.
+ */
+export function __qaNearbyLabelHint(el: Element): string | null {
+  var cur: Element | null = el;
+  for (var hops = 0; cur && hops < 4; hops++) {
+    var prev = cur.previousElementSibling;
+    while (prev) {
+      var t = __qaCollapse(prev.textContent);
+      if (t && t.length <= 60) return t;
+      prev = prev.previousElementSibling;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 export function __qaScopeHint(el: Element): string | null {
@@ -699,7 +782,7 @@ export function __qaScopeHint(el: Element): string | null {
 /* Node builder                                                         */
 /* ------------------------------------------------------------------ */
 
-export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, clickTarget?: boolean): RawNode {
+export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, clickTarget?: boolean, rootScope?: RawScope | null): RawNode {
   var role = __qaRole(el);
   var accessibleName = __qaAccessibleName(el);
   var cssPath = inShadow ? "" : __qaCssPath(el);
@@ -708,7 +791,7 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
   // role candidate never carries the blob.
   var heading = clickTarget ? __qaClickTargetHeading(el) : null;
   if (heading) accessibleName = heading;
-  var cand = __qaCandidates(el, role, accessibleName, inShadow, cssPath);
+  var cand = __qaCandidates(el, role, accessibleName, inShadow, cssPath, rootScope);
   if (clickTarget) {
     if (heading) cand.candidates.unshift({ strategy: "text", value: heading });
     cand.note =
@@ -729,6 +812,17 @@ export function __qaBuildNode(el: Element, inShadow: boolean, visible: boolean, 
     properties: __qaProperties(el, visible),
   };
   if (cand.note) node.context_note = cand.note;
+  // Unlabeled form control (a framework combobox whose visible label is not
+  // associated): say what text sits before it, flagged as a hint.
+  var tagLower = el.tagName.toLowerCase();
+  if (!accessibleName && (tagLower === "input" || tagLower === "select" || tagLower === "textarea" || role === "combobox")) {
+    var hint = __qaNearbyLabelHint(el);
+    if (hint) {
+      node.context_note =
+        (node.context_note ? node.context_note + " " : "") +
+        "Unlabeled control; nearest text before it is '" + hint + "' (hint only, not an association; ask the frontend for a label or aria-label).";
+    }
+  }
   // Notification libraries (Ant Design and friends) often keep the
   // role=alert/status live region EMPTY and render the message in a sibling.
   // Pull the text from the nearest non-empty enclosing container so tests
@@ -775,8 +869,29 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
   };
 
   interface StackEntry { el: Element; depth: number; inShadow: boolean; anc: AncestorFlags; ptr: boolean }
-  var rootAnc: AncestorFlags = { displayNone: false };
-  var stack: StackEntry[] = [{ el: document.documentElement, depth: 0, inShadow: false, anc: rootAnc, ptr: false }];
+  var root: Element = document.documentElement;
+  if (opts.scopeSelector) {
+    var scoped: Element | null = null;
+    try {
+      scoped = __qaScopeRoot(opts.scopeSelector);
+    } catch (e) {
+      notes.push("scope '" + opts.scopeSelector + "' is not a valid CSS selector; nothing extracted.");
+      return { nodes: [], truncated: false, notes: notes };
+    }
+    if (!scoped) {
+      notes.push("scope '" + opts.scopeSelector + "' matched no element; nothing extracted.");
+      return { nodes: [], truncated: false, notes: notes };
+    }
+    root = scoped;
+  }
+  var rootAnc: AncestorFlags = root === document.documentElement ? { displayNone: false } : __qaAncestorFlags(root);
+  var rootScope: RawScope | null = opts.scopeSelector && root !== document.documentElement ? { kind: "css", value: opts.scopeSelector } : null;
+  var roleFilter: { [key: string]: boolean } | null = null;
+  if (opts.roles && opts.roles.length > 0) {
+    roleFilter = {};
+    for (var rf = 0; rf < opts.roles.length; rf++) roleFilter[opts.roles[rf]!.toLowerCase()] = true;
+  }
+  var stack: StackEntry[] = [{ el: root, depth: 0, inShadow: false, anc: rootAnc, ptr: false }];
 
   while (stack.length > 0) {
     var entry = stack.pop()!;
@@ -821,12 +936,17 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
     var clickTarget =
       !included && !!opts.includeClickTargets && vis.pointer && !entry.ptr && __qaHasContent(el);
     if (included || clickTarget) {
-      if (nodes.length >= opts.maxNodes) {
-        truncated = true;
-        notes.push("MAX_NODES (" + opts.maxNodes + ") hit; traversal stopped early.");
-        break;
+      var keep = true;
+      if (roleFilter && !roleFilter[(role || "").toLowerCase()] && !roleFilter[tag]) keep = false;
+      if (keep && opts.visibleOnly && !vis.visible) keep = false;
+      if (keep) {
+        if (nodes.length >= opts.maxNodes) {
+          truncated = true;
+          notes.push("MAX_NODES (" + opts.maxNodes + ") hit; traversal stopped early.");
+          break;
+        }
+        nodes.push(__qaBuildNode(el, entry.inShadow, vis.visible, clickTarget, rootScope));
       }
-      nodes.push(__qaBuildNode(el, entry.inShadow, vis.visible, clickTarget));
     }
 
     // Descend: open shadow root first (flagged in_shadow), then light children.
@@ -845,4 +965,436 @@ export function __qaExtract(opts: InPageOptions): RawExtractResult {
   }
 
   return { nodes: nodes, truncated: truncated, notes: notes };
+}
+
+/* ------------------------------------------------------------------ */
+/* Outline engine (v0.8): the page as a map                              */
+/* ------------------------------------------------------------------ */
+
+export interface RawRegion {
+  kind: string;
+  name: string | null;
+  /** CSS selector that `scope` accepts; short when the page allows it. */
+  selector: string;
+  interactive_count: number;
+  is_visible: boolean;
+  row_count?: number;
+  item_count?: number;
+}
+
+export interface RawTable {
+  selector: string;
+  name: string | null;
+  headers: string[];
+  row_count: number;
+  rows: Array<{ identity: string | null; cells: { [header: string]: string } }>;
+  truncated: boolean;
+}
+
+export interface RawDialog {
+  selector: string;
+  name: string | null;
+  is_visible: boolean;
+  text: string;
+  fields: { [label: string]: string };
+}
+
+export interface RawOutline {
+  regions: RawRegion[];
+  tables: RawTable[];
+  dialogs: RawDialog[];
+  alerts: string[];
+  interactive_count: number;
+  notes: string[];
+}
+
+export interface OutlineOptions {
+  maxRows: number;
+  /** Restrict to this selector (structured data for one region). */
+  scopeSelector?: string;
+}
+
+/** Shortest selector that identifies the element on this page, for `scope`. */
+export function __qaRegionSelector(el: Element): string {
+  var tid = el.getAttribute("data-testid");
+  if (tid) return '[data-testid="' + tid.replace(/"/g, '\\"') + '"]';
+  if (el.id && !__qaIsGeneratedId(el.id) && document.querySelectorAll("#" + CSS.escape(el.id)).length === 1) return "#" + CSS.escape(el.id);
+  var tag = el.tagName.toLowerCase();
+  var role = el.getAttribute("role");
+  var candidates = [tag, role ? '[role="' + role + '"]' : null, role ? tag + '[role="' + role + '"]' : null];
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i];
+    if (c && document.querySelectorAll(c).length === 1) return c;
+  }
+  var label = el.getAttribute("aria-label");
+  if (label) {
+    var sel = tag + '[aria-label="' + label.replace(/"/g, '\\"') + '"]';
+    if (document.querySelectorAll(sel).length === 1) return sel;
+  }
+  // Landmark-prefixed ("main table", "header nav"), then a short structural path.
+  var landmark = el.parentElement ? el.parentElement.closest("main, header, footer, nav, aside, form, dialog, [role=dialog], section") : null;
+  if (landmark) {
+    var lsel = __qaRegionSelectorShort(landmark) + " " + tag;
+    if (document.querySelectorAll(lsel).length === 1) return lsel;
+  }
+  var short = __qaRegionSelectorShort(el);
+  if (document.querySelectorAll(short).length === 1) return short;
+  // Last resort: a chain that starts at the nearest ancestor with a usable id or test-id.
+  var anchor: Element | null = el.parentElement;
+  while (anchor && anchor !== document.documentElement) {
+    var atid = anchor.getAttribute("data-testid");
+    var aid = anchor.id && !__qaIsGeneratedId(anchor.id) ? anchor.id : "";
+    if (atid || aid) {
+      var prefix = atid ? '[data-testid="' + atid.replace(/"/g, '\\"') + '"]' : "#" + CSS.escape(aid);
+      var rel = __qaRegionSelectorShort(el);
+      var combined = prefix + " " + rel;
+      if (document.querySelectorAll(combined).length === 1) return combined;
+      break;
+    }
+    anchor = anchor.parentElement;
+  }
+  return __qaCssPath(el) || tag;
+}
+
+/** `parent > tag:nth-of-type(k)` chain up to 3 levels, as short as uniqueness allows. */
+export function __qaRegionSelectorShort(el: Element): string {
+  var parts: string[] = [];
+  var cur: Element | null = el;
+  for (var depth = 0; cur && cur !== document.documentElement && depth < 6; depth++) {
+    var t = cur.tagName.toLowerCase();
+    var seg = t;
+    if (cur.id && !__qaIsGeneratedId(cur.id)) {
+      parts.unshift("#" + CSS.escape(cur.id));
+      break;
+    }
+    var parent: Element | null = cur.parentElement;
+    if (parent) {
+      var same = 0;
+      var idx = 0;
+      for (var i = 0; i < parent.children.length; i++) {
+        if (parent.children[i]!.tagName === cur.tagName) {
+          same++;
+          if (parent.children[i] === cur) idx = same;
+        }
+      }
+      if (same > 1) seg = t + ":nth-of-type(" + idx + ")";
+    }
+    parts.unshift(seg);
+    if (document.querySelectorAll(parts.join(" > ")).length === 1) break;
+    cur = parent;
+  }
+  return parts.join(" > ");
+}
+
+export function __qaCountInteractive(root: Element): number {
+  var n = 0;
+  var all = root.querySelectorAll("*");
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i]!;
+    if (__qaShouldInclude(el, __qaRole(el))) n++;
+  }
+  return n;
+}
+
+export function __qaRegionName(el: Element): string | null {
+  var label = __qaCollapse(el.getAttribute("aria-label"));
+  if (label) return label;
+  var labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    var ref = document.getElementById(labelledBy.split(/\s+/)[0]!);
+    var t = ref ? __qaCollapse(ref.textContent) : "";
+    if (t) return t;
+  }
+  var heading = el.querySelector("h1,h2,h3,h4,caption,legend");
+  if (heading) {
+    var h = __qaCollapse(heading.textContent);
+    if (h) return h.length > 80 ? h.slice(0, 80) : h;
+  }
+  return null;
+}
+
+export function __qaCellText(cell: Element): string {
+  var it = (cell as HTMLElement).innerText;
+  var t = __qaCollapse(typeof it === "string" && it ? it : cell.textContent);
+  if (!t) {
+    var input = cell.querySelector("input,select,textarea");
+    if (input) t = __qaCollapse((input as HTMLInputElement).value);
+  }
+  return t.length > 80 ? t.slice(0, 80) : t;
+}
+
+/**
+ * Component libraries with a fixed header render TWO tables: one holding only
+ * the <thead>, the next holding only the <tbody>. The body table borrows the
+ * headers of the nearest preceding header-only table in the same container.
+ */
+export function __qaHeaderDonor(table: Element): Element | null {
+  var container: Element | null = table.parentElement;
+  for (var up = 0; container && up < 4; up++) {
+    var tables = container.querySelectorAll("table");
+    var previous: Element | null = null;
+    for (var i = 0; i < tables.length; i++) {
+      var t = tables[i]!;
+      if (t === table) break;
+      if (t.querySelector("thead th, thead td") && !t.querySelector("tbody tr")) previous = t;
+    }
+    if (previous) return previous;
+    container = container.parentElement;
+  }
+  return null;
+}
+
+export function __qaTableData(table: Element, maxRows: number): RawTable {
+  var headers: string[] = [];
+  var headerCells = table.querySelectorAll("thead th, thead td, tr:first-child th, [role=columnheader]");
+  if (headerCells.length === 0) {
+    var donor = __qaHeaderDonor(table);
+    if (donor) headerCells = donor.querySelectorAll("thead th, thead td");
+  }
+  for (var h = 0; h < headerCells.length; h++) {
+    var ht = __qaCellText(headerCells[h]!);
+    headers.push(ht || "col" + (h + 1));
+  }
+  var rowEls: Element[] = [];
+  var trs = table.querySelectorAll("tbody tr, [role=row]");
+  for (var r = 0; r < trs.length; r++) {
+    var tr = trs[r]!;
+    if (tr.querySelector("th") && !tr.querySelector("td") && headers.length > 0) continue; // header row
+    if (tr.closest("thead")) continue;
+    rowEls.push(tr);
+  }
+  var rows: RawTable["rows"] = [];
+  for (var i = 0; i < rowEls.length && i < maxRows; i++) {
+    var cells = rowEls[i]!.querySelectorAll("td, th, [role=cell], [role=gridcell], [role=rowheader]");
+    var record: { [header: string]: string } = {};
+    var nonEmpty = 0;
+    for (var c = 0; c < cells.length; c++) {
+      var key = headers[c] || "col" + (c + 1);
+      record[key] = __qaCellText(cells[c]!);
+      if (record[key]) nonEmpty++;
+    }
+    if (nonEmpty === 0) continue; // layout/measure rows carry no data
+    rows.push({ identity: __qaScopeText(rowEls[i]!, "td,th,[role=cell],[role=gridcell],[role=rowheader]"), cells: record });
+  }
+  return {
+    selector: __qaRegionSelector(table),
+    name: __qaRegionName(table),
+    headers: headers,
+    row_count: rowEls.length,
+    rows: rows,
+    truncated: rowEls.length > maxRows,
+  };
+}
+
+/** Label/value pairs from a dialog or detail panel: <dl>, "Label: value" lines, two-cell rows. */
+export function __qaFields(root: Element): { [label: string]: string } {
+  var out: { [label: string]: string } = {};
+  var dts = root.querySelectorAll("dt");
+  for (var i = 0; i < dts.length; i++) {
+    var dt = dts[i]!;
+    var dd = dt.nextElementSibling;
+    if (dd && dd.tagName.toLowerCase() === "dd") {
+      var k = __qaCollapse(dt.textContent);
+      if (k) out[k] = __qaCellText(dd);
+    }
+  }
+  // Two-part rows: an element with exactly two children whose first is short
+  // label-like text. Table cells are reported as tables, not as fields.
+  var blocks = root.querySelectorAll("div, li, p");
+  for (var b = 0; b < blocks.length; b++) {
+    var block = blocks[b]!;
+    if (block.children.length !== 2) continue;
+    if (block.closest("table")) continue;
+    var first = block.children[0]!;
+    var second = block.children[1]!;
+    // A label is short, plain text: not a heading, not a control, not a block of controls.
+    if (/^(H[1-6]|BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(first.tagName) || first.querySelector("button, a, input, select, h1, h2, h3, h4")) continue;
+    if (/^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(second.tagName) || second.querySelector("button, a, input, select")) continue;
+    var a = __qaCollapse(first.textContent);
+    var v = __qaCollapse(second.textContent);
+    if (!a || !v || a.length > 30 || v.length > 120) continue;
+    var key2 = a.replace(/:$/, "");
+    if (out[key2] === undefined) out[key2] = v;
+  }
+  return out;
+}
+
+export function __qaDialogData(el: Element): RawDialog {
+  var vis = __qaVisibility(el, __qaAncestorFlags(el));
+  var text = __qaCollapse(el.textContent);
+  return {
+    selector: __qaRegionSelector(el),
+    name: __qaRegionName(el),
+    is_visible: vis.visible,
+    text: text.length > 400 ? text.slice(0, 400) : text,
+    fields: __qaFields(el),
+  };
+}
+
+/**
+ * Descendants of the root matching `sel`, plus the root itself when it
+ * matches: an outline scoped to a dialog or a table must describe that
+ * element. Top-level on purpose: nested function declarations get wrapped by
+ * bundler helpers that do not exist inside the page.
+ */
+export function __qaCollect(root: Element | Document, sel: string): Element[] {
+  var found: Element[] = [];
+  if (root !== document && (root as Element).matches(sel)) found.push(root as Element);
+  var q = root.querySelectorAll(sel);
+  for (var qi = 0; qi < q.length; qi++) found.push(q[qi]!);
+  return found;
+}
+
+/**
+ * Signature of an element's "shape": tag plus its first class token. Cards in
+ * a grid share it; unrelated siblings do not. Used to find repeated-structure
+ * containers (product grids, card lists) that carry no list/table semantics.
+ */
+export function __qaShapeSignature(el: Element): string {
+  var cls = (el.getAttribute("class") || "").trim().split(/\s+/)[0] || "";
+  return el.tagName.toLowerCase() + "." + cls;
+}
+
+/**
+ * Containers whose children repeat the same shape at least `min` times and
+ * carry interactive content: an SPA product grid, a card list, a result list.
+ * Most listings are <div> grids, so landmark selectors alone miss them, and
+ * they are exactly what an agent wants to scope an extraction to.
+ */
+export function __qaRepeatedContainers(root: Element | Document, min: number): Array<{ el: Element; count: number }> {
+  var out: Array<{ el: Element; count: number }> = [];
+  var candidates = __qaCollect(root, "div, section, ul, ol, main");
+  for (var i = 0; i < candidates.length && out.length < 8; i++) {
+    var el = candidates[i]!;
+    var kids = el.children;
+    if (kids.length < min) continue;
+    var counts: { [sig: string]: number } = {};
+    var best = 0;
+    for (var k = 0; k < kids.length; k++) {
+      var sig = __qaShapeSignature(kids[k]!);
+      var next = (counts[sig] || 0) + 1;
+      counts[sig] = next;
+      if (next > best) best = next;
+    }
+    // The repeated shape must dominate the container and carry content.
+    if (best < min || best < kids.length / 2) continue;
+    if (__qaCountInteractive(el) === 0 && !__qaCollapse(el.textContent)) continue;
+    // Keep the innermost container: skip when an already-found one is inside this.
+    var containsFound = false;
+    for (var f = 0; f < out.length; f++) if (el.contains(out[f]!.el)) containsFound = true;
+    if (containsFound) continue;
+    out.push({ el: el, count: best });
+  }
+  return out;
+}
+
+export function __qaOutline(opts: OutlineOptions): RawOutline {
+  var notes: string[] = [];
+  var root: Element | Document = document;
+  if (opts.scopeSelector) {
+    var scoped: Element | null = null;
+    try {
+      scoped = __qaScopeRoot(opts.scopeSelector);
+    } catch (e) {
+      notes.push("scope '" + opts.scopeSelector + "' is not a valid CSS selector.");
+    }
+    if (!scoped) {
+      if (notes.length === 0) notes.push("scope '" + opts.scopeSelector + "' matched no element.");
+      return { regions: [], tables: [], dialogs: [], alerts: [], interactive_count: 0, notes: notes };
+    }
+    root = scoped;
+  }
+
+  var regions: RawRegion[] = [];
+  var landmarkSel =
+    "header, nav, main, aside, footer, form, section[aria-label], section[aria-labelledby], " +
+    '[role="banner"], [role="navigation"], [role="main"], [role="complementary"], [role="contentinfo"], ' +
+    '[role="region"], [role="search"], [role="form"], [role="tablist"], [role="menu"], [role="toolbar"], ' +
+    'table, [role="table"], [role="grid"], ul, ol, [role="list"], dialog, [role="dialog"], [role="alertdialog"]';
+  var els = __qaCollect(root, landmarkSel);
+  var seen: Element[] = [];
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i]!;
+    // Nested landmarks of the same kind (a list inside a list) add noise: keep the outermost.
+    var tag = el.tagName.toLowerCase();
+    var role = el.getAttribute("role") || "";
+    // Kinds are ARIA landmark names so an agent reads one vocabulary.
+    var tagKinds: { [t: string]: string } = { nav: "navigation", header: "banner", footer: "contentinfo", aside: "complementary", main: "main", form: "form", section: "region" };
+    var kind =
+      tag === "table" || role === "table" || role === "grid"
+        ? "table"
+        : tag === "ul" || tag === "ol" || role === "list"
+          ? "list"
+          : tag === "dialog" || role === "dialog" || role === "alertdialog"
+            ? "dialog"
+            : role || tagKinds[tag] || tag;
+    var count = __qaCountInteractive(el);
+    if (kind === "list") {
+      var items = el.querySelectorAll(":scope > li, :scope > [role=listitem]").length;
+      if (items < 2 || count === 0) continue; // decorative or nav sub-lists carry nothing to extract
+      var outerList = el.parentElement ? el.parentElement.closest("ul, ol, [role=list]") : null;
+      if (outerList && root !== el) continue;
+    }
+    if (count === 0 && kind !== "dialog" && kind !== "table") continue;
+    var vis = __qaVisibility(el, __qaAncestorFlags(el));
+    var region: RawRegion = {
+      kind: kind,
+      name: __qaRegionName(el),
+      selector: __qaRegionSelector(el),
+      interactive_count: count,
+      is_visible: vis.visible,
+    };
+    if (kind === "table") region.row_count = el.querySelectorAll("tbody tr, [role=row]").length;
+    if (kind === "list") region.item_count = el.querySelectorAll(":scope > li, :scope > [role=listitem]").length;
+    regions.push(region);
+    seen.push(el);
+  }
+
+  // Repeated-structure containers (card grids): a listing an agent can scope to.
+  var repeated = __qaRepeatedContainers(root, 3);
+  for (var rp = 0; rp < repeated.length; rp++) {
+    var rEl = repeated[rp]!.el;
+    var alreadyListed = false;
+    for (var se = 0; se < seen.length; se++) if (seen[se] === rEl) alreadyListed = true;
+    if (alreadyListed) continue;
+    var rCount = __qaCountInteractive(rEl);
+    if (rCount === 0) continue;
+    var rVis = __qaVisibility(rEl, __qaAncestorFlags(rEl));
+    regions.push({
+      kind: "list",
+      name: __qaRegionName(rEl),
+      selector: __qaRegionSelector(rEl),
+      interactive_count: rCount,
+      is_visible: rVis.visible,
+      item_count: repeated[rp]!.count,
+    });
+    seen.push(rEl);
+  }
+
+  var tables: RawTable[] = [];
+  var tableEls = __qaCollect(root, "table, [role=table], [role=grid]");
+  for (var t = 0; t < tableEls.length && t < 10; t++) {
+    var te = tableEls[t]!;
+    // A header-only table whose headers a following body table borrows is half of one table.
+    if (te.querySelector("thead th, thead td") && !te.querySelector("tbody tr")) {
+      var borrowed = false;
+      for (var t2 = t + 1; t2 < tableEls.length; t2++) if (__qaHeaderDonor(tableEls[t2]!) === te) borrowed = true;
+      if (borrowed) continue;
+    }
+    tables.push(__qaTableData(te, opts.maxRows));
+  }
+
+  var dialogs: RawDialog[] = [];
+  var dialogEls = __qaCollect(root, "dialog[open], [role=dialog], [role=alertdialog]");
+  for (var d = 0; d < dialogEls.length && d < 5; d++) dialogs.push(__qaDialogData(dialogEls[d]!));
+
+  var alerts: string[] = [];
+  var alertEls = __qaCollect(root, "[role=alert], [role=status]");
+  for (var a = 0; a < alertEls.length && a < 10; a++) {
+    var at = __qaCollapse(alertEls[a]!.textContent) || __qaCollapse(alertEls[a]!.parentElement ? alertEls[a]!.parentElement!.textContent : "");
+    if (at) alerts.push(at.length > 160 ? at.slice(0, 160) : at);
+  }
+
+  var total = __qaCountInteractive(root === document ? document.documentElement : (root as Element));
+  return { regions: regions, tables: tables, dialogs: dialogs, alerts: alerts, interactive_count: total, notes: notes };
 }

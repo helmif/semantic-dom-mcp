@@ -10,18 +10,22 @@
  * browser to the allowlisted target URL. No telemetry, no other calls.
  * Logging goes to stderr and never includes page contents.
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { chromium } from "playwright";
 import type { Browser, BrowserContext, Frame, Page } from "playwright";
-import { buildEvaluateExpression, CLOSED_SHADOW_INIT_SCRIPT } from "./extractor/inPage.js";
+import { buildEvaluateExpression, buildOutlineExpression, CLOSED_SHADOW_INIT_SCRIPT } from "./extractor/inPage.js";
+import type { RawOutline } from "./extractor/traverse.js";
+import { LocatorParseError, parseLocatorExpression } from "./locatorExpr.js";
+import { compactNode } from "./compact.js";
 import { buildPwLocator, resolveLocators, type CountCache } from "./extractor/locators.js";
 import type { RawExtractResult } from "./extractor/traverse.js";
 import { observePage } from "./observe.js";
 import { REDACTED, redactDeep, registerSecret } from "./secrets.js";
-import { emptyProperties, type InteractiveNode, type LocatorStrategy, type SemanticExtract } from "./types.js";
+import { emptyProperties, type InteractiveNode, type LocatorStrategy, type SemanticExtract, type SemanticOutline } from "./types.js";
 import { safeOrigin, stripQuery } from "./url.js";
 
 const NAV_TIMEOUT_MS = 30_000;
+const LAUNCH_TIMEOUT_MS = 20_000;
 const WAIT_SELECTOR_TIMEOUT_MS = 15_000;
 export const MAX_DEPTH = 50;
 
@@ -52,7 +56,7 @@ export function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
     console.error("[semantic-dom-mcp] launching chromium (headless)");
     const launching: Promise<Browser> = chromium
-      .launch({ headless: true })
+      .launch({ headless: true, timeout: LAUNCH_TIMEOUT_MS })
       .then((browser) => {
         browser.on("disconnected", () => {
           if (browserPromise === launching) {
@@ -64,7 +68,12 @@ export function getBrowser(): Promise<Browser> {
       })
       .catch((err: unknown) => {
         if (browserPromise === launching) browserPromise = undefined;
-        throw err;
+        const msg = err instanceof Error ? err.message.split("\n")[0]! : String(err);
+        throw new ExtractError(
+          "browser_unavailable",
+          `Chromium could not be launched: ${msg}`,
+          "Install the matching browser with `npx -y -p semantic-dom-mcp playwright install chromium`, then retry.",
+        );
       });
     browserPromise = launching;
   }
@@ -171,6 +180,7 @@ export async function newContext(browser: Browser, viewport: ViewportPreset = "d
       "Export a Playwright storageState JSON for the staging session, or unset the variable.",
     );
   }
+  if (storageState) warnIfStorageStateReadable(storageState);
   const context = await browser.newContext({
     ...(storageState ? { storageState } : {}),
     ...(viewport === "mobile"
@@ -184,6 +194,25 @@ export async function newContext(browser: Browser, viewport: ViewportPreset = "d
     throw err;
   }
   return context;
+}
+
+let warnedStorageState = false;
+/** A storageState file holds a live session; anyone who can read it is logged in. Warn once. */
+export function storageStatePermissionProblem(path: string): string | null {
+  if (process.platform === "win32") return null;
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if (mode & 0o077) return `storage state '${path}' is readable by other users (mode ${mode.toString(8)}); run chmod 600 on it.`;
+  } catch {
+    return null;
+  }
+  return null;
+}
+function warnIfStorageStateReadable(path: string): void {
+  if (warnedStorageState) return;
+  warnedStorageState = true;
+  const problem = storageStatePermissionProblem(path);
+  if (problem) console.error(`[semantic-dom-mcp] warning: ${problem}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,6 +306,16 @@ export interface ExtractInput {
   /** Opt-in heuristic: include cursor:pointer boundary elements with content
    * (JS-click cards) that match no other inclusion rule. Default false. */
   include_click_targets?: boolean | undefined;
+  /** CSS selector to extract within (from an outline region's `selector`, or any). */
+  scope?: string | undefined;
+  /** Keep only nodes whose role or tag is listed. */
+  roles?: string[] | undefined;
+  /** Skip hidden nodes entirely (cheaper than include_hidden=false: they are never verified). */
+  visible_only?: boolean | undefined;
+  /** Budget for the node list; nodes beyond it are dropped in document order and counted in `omitted`. */
+  max_output_chars?: number | undefined;
+  /** Attach structured `tables` and `dialogs` found inside the scope. */
+  include_tables?: boolean | undefined;
 }
 
 async function withPage<T>(fn: (page: Page) => Promise<T>, viewport?: ViewportPreset): Promise<T> {
@@ -457,12 +496,13 @@ export async function navigateForExtraction(
   }
 }
 
+export type SnapshotOptions = Pick<
+  ExtractInput,
+  "include_hidden" | "max_nodes" | "include_click_targets" | "scope" | "roles" | "visible_only" | "max_output_chars" | "include_tables"
+>;
+
 /** Snapshots the page's CURRENT state into a SemanticExtract. */
-export async function snapshotPage(
-  page: Page,
-  input: Pick<ExtractInput, "include_hidden" | "max_nodes" | "include_click_targets">,
-  extraNotes: string[] = [],
-): Promise<SemanticExtract> {
+export async function snapshotPage(page: Page, input: SnapshotOptions, extraNotes: string[] = []): Promise<SemanticExtract> {
     const frames = await enumerateFrames(page);
     const nodes: InteractiveNode[] = [];
     const notes: string[] = [...extraNotes];
@@ -489,6 +529,9 @@ export async function snapshotPage(
               maxNodes: budget,
               maxDepth: MAX_DEPTH,
               includeClickTargets: input.include_click_targets === true,
+              ...(input.scope ? { scopeSelector: input.scope } : {}),
+              ...(input.roles && input.roles.length > 0 ? { roles: input.roles } : {}),
+              ...(input.visible_only ? { visibleOnly: true } : {}),
             }),
           ),
           EVALUATE_TIMEOUT_MS,
@@ -554,18 +597,62 @@ export async function snapshotPage(
       );
     }
 
+    // Output budget: keep nodes in document order until the compact wire size
+    // would exceed the budget; count the rest. Never silent.
+    let kept = nodes;
+    let omitted: SemanticExtract["omitted"];
+    if (input.max_output_chars !== undefined && input.max_output_chars > 0) {
+      // Facts before heuristics: opt-in click-target nodes are extras, so they
+      // yield the budget to real interactive nodes. Within each group,
+      // document order, and survivors are returned in document order.
+      const isHeuristic = (n: InteractiveNode) => (n.context_note ?? "").includes("click-target heuristic");
+      const ordered = [...nodes.filter((n) => !isHeuristic(n)), ...nodes.filter(isHeuristic)];
+      const order = new Map(nodes.map((n, i) => [n, i]));
+      let used = 600; // metadata envelope
+      const within: InteractiveNode[] = [];
+      const droppedRoles = new Map<string, number>();
+      for (const node of ordered) {
+        const size = JSON.stringify(compactNode(node)).length + 1;
+        if (used + size <= input.max_output_chars) {
+          used += size;
+          within.push(node);
+        } else {
+          const key = node.role ?? node.tag;
+          droppedRoles.set(key, (droppedRoles.get(key) ?? 0) + 1);
+        }
+      }
+      if (within.length < nodes.length) {
+        within.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+        const byRole = [...droppedRoles.entries()].sort((a, b) => b[1] - a[1]).map(([r, n]) => `${n} ${r}`).join(", ");
+        omitted = {
+          nodes: nodes.length - within.length,
+          reason: `max_output_chars (${input.max_output_chars}) reached. Dropped: ${byRole}. Narrow with roles/scope/visible_only, or raise the budget.`,
+        };
+        notes.push(`${nodes.length - within.length} node(s) omitted by max_output_chars; see 'omitted'.`);
+        kept = within;
+      }
+    }
+
+    let structured: Pick<SemanticExtract, "tables" | "dialogs"> = {};
+    if (input.include_tables) {
+      const outline = await outlinePage(page, input.scope);
+      structured = { tables: outline.tables, dialogs: outline.dialogs };
+    }
+
     const extract = redactDeep<SemanticExtract>({
-      schema_version: "1.4",
+      schema_version: "1.5",
       page_metadata: {
         title: await pageTitle(page),
         url: page.url(),
         captured_at: new Date().toISOString(),
-        node_count: nodes.length,
+        node_count: kept.length,
         frame_count: frames.length,
         truncated,
         notes,
       },
-      interactive_nodes: nodes,
+      interactive_nodes: kept,
+      ...structured,
+      ...(omitted ? { omitted } : {}),
     });
     // A locator whose text contained a secret cannot be used as emitted: say so
     // rather than carry a verified-unique flag on a string that matches nothing.
@@ -591,17 +678,129 @@ export async function extractSemanticDom(input: ExtractInput): Promise<SemanticE
 }
 
 /* ------------------------------------------------------------------ */
+/* Outline (v0.8): the page as a map                                    */
+/* ------------------------------------------------------------------ */
+
+const OUTLINE_MAX_ROWS = 20;
+
+/** Raw outline of the main frame (structured tables/dialogs included), redacted. */
+export async function outlinePage(page: Page, scope?: string | undefined): Promise<RawOutline> {
+  const raw = (await withTimeout(
+    page.mainFrame().evaluate(buildOutlineExpression({ maxRows: OUTLINE_MAX_ROWS, ...(scope ? { scopeSelector: scope } : {}) })),
+    EVALUATE_TIMEOUT_MS,
+    "In-page outline",
+  )) as RawOutline;
+  return redactDeep(raw);
+}
+
+export async function outlineFromPage(page: Page, scope?: string | undefined, extraNotes: string[] = []): Promise<SemanticOutline> {
+  const raw = await outlinePage(page, scope);
+  return {
+    schema_version: "1.5",
+    kind: "outline",
+    page_metadata: { title: await pageTitle(page), url: page.url(), captured_at: new Date().toISOString(), notes: [...extraNotes, ...raw.notes] },
+    interactive_count: raw.interactive_count,
+    regions: raw.regions,
+    tables: raw.tables,
+    dialogs: raw.dialogs,
+    alerts: raw.alerts,
+  };
+}
+
+export interface OutlineInput extends Pick<ExtractInput, "url" | "wait_for" | "wait_selector" | "viewport" | "scope"> {}
+
+export async function extractOutline(input: OutlineInput): Promise<SemanticOutline> {
+  const denial = checkUrlAllowed(input.url);
+  if (denial) throw new ExtractError("url_not_allowed", denial);
+  return withPage(async (page) => {
+    console.error(`[semantic-dom-mcp] outline (wait_for=${input.wait_for})`);
+    await navigateForExtraction(page, input);
+    return outlineFromPage(page, input.scope);
+  }, input.viewport);
+}
+
+/* ------------------------------------------------------------------ */
+/* verify_locators (v0.8): close the loop after the test is written     */
+/* ------------------------------------------------------------------ */
+
+export interface LocatorVerdict {
+  playwright: string;
+  matches: number | null;
+  unique: boolean;
+  /** Parse or evaluation problem; the expression cannot be used as written. */
+  error?: string;
+  /** First match, for a sanity check of what the expression points at. */
+  first?: { tag: string; role: string | null; name: string | null; visible: boolean };
+}
+
+export async function verifyLocatorsOnPage(page: Page, expressions: string[]): Promise<LocatorVerdict[]> {
+  const out: LocatorVerdict[] = [];
+  for (const expr of expressions) {
+    let parsed: ActionLocator;
+    try {
+      parsed = parseLocatorExpression(expr);
+    } catch (err) {
+      out.push({ playwright: expr, matches: null, unique: false, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+    try {
+      const target = actionTarget(page, parsed);
+      const matches = await target.count();
+      const verdict: LocatorVerdict = { playwright: expr, matches, unique: matches === 1 };
+      if (matches > 0) {
+        verdict.first = await target.first().evaluate((el) => ({
+          tag: el.tagName.toLowerCase(),
+          role: el.getAttribute("role"),
+          name: el.getAttribute("aria-label") || (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80) || null,
+          visible: !!(el as HTMLElement).offsetParent || getComputedStyle(el).position === "fixed",
+        }));
+      }
+      out.push(verdict);
+    } catch (err) {
+      out.push({ playwright: expr, matches: null, unique: false, error: err instanceof Error ? err.message.split("\n")[0]! : String(err) });
+    }
+  }
+  return out;
+}
+
+export interface VerifyInput extends Pick<ExtractInput, "url" | "wait_for" | "wait_selector" | "viewport"> {
+  locators: string[];
+}
+
+export async function verifyLocators(input: VerifyInput): Promise<{ url: string; results: LocatorVerdict[]; summary: { total: number; unique: number; ambiguous: number; missing: number; invalid: number } }> {
+  const denial = checkUrlAllowed(input.url);
+  if (denial) throw new ExtractError("url_not_allowed", denial);
+  return withPage(async (page) => {
+    await navigateForExtraction(page, input);
+    const results = await verifyLocatorsOnPage(page, input.locators);
+    return { url: page.url(), results, summary: summarizeVerdicts(results) };
+  }, input.viewport);
+}
+
+export function summarizeVerdicts(results: LocatorVerdict[]) {
+  return {
+    total: results.length,
+    unique: results.filter((r) => r.unique).length,
+    ambiguous: results.filter((r) => r.matches !== null && r.matches > 1).length,
+    missing: results.filter((r) => r.matches === 0).length,
+    invalid: results.filter((r) => r.error !== undefined).length,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Declared-actions extraction ("multi-snapshot", v0.2)                */
 /* ------------------------------------------------------------------ */
 
 export interface ActionLocator {
+  /** A `playwright` expression exactly as an extraction returned it; parsed by a strict grammar. Alternative to strategy/value. */
+  playwright?: string | undefined;
   strategy: LocatorStrategy;
   value: string;
   role?: string;
   /** Apply .nth(i) — use the index from a prior extraction's disambiguation. */
   nth?: number;
   /** Scope to a container first, as given by the extraction's `within`. */
-  within?: { kind: "row" | "listitem" | "test-id"; value: string } | undefined;
+  within?: { kind: "row" | "listitem" | "test-id" | "css"; value: string } | undefined;
 }
 
 export type PageAction =
@@ -656,7 +855,8 @@ export async function waitAfterActions(page: Page, selector: string | undefined,
   if (settleMs > 0) await page.waitForTimeout(settleMs);
 }
 
-function actionTarget(page: Page, loc: ActionLocator) {
+function actionTarget(page: Page, raw: ActionLocator) {
+  const loc = raw.playwright ? { ...parseLocatorExpression(raw.playwright), ...(raw.nth !== undefined ? { nth: raw.nth } : {}) } : raw;
   let target = buildPwLocator(page.mainFrame(), {
     strategy: loc.strategy,
     value: loc.value,
@@ -718,6 +918,9 @@ export async function performAction(page: Page, action: PageAction, index: numbe
     }
   } catch (err) {
     if (err instanceof ExtractError) throw err;
+    if (err instanceof LocatorParseError) {
+      throw new ExtractError("invalid_locator", `Action ${index + 1} (${action.type}): ${err.message}`, "Paste a `playwright` expression exactly as an extraction returned it, or use strategy/value.");
+    }
     // Never echo fill values (they may hold credentials) — only the locator.
     const reason = actionFailureReason(err);
     const where =
@@ -725,7 +928,9 @@ export async function performAction(page: Page, action: PageAction, index: numbe
         ? "wait"
         : action.type === "goto"
           ? `url='${stripQuery(action.url)}'`
-          : `${action.locator.strategy}='${action.locator.value}'`;
+          : action.locator.playwright
+            ? action.locator.playwright
+            : `${action.locator.strategy}='${action.locator.value}'`;
     throw new ExtractError(
       "action_failed",
       `Action ${index + 1} (${action.type}) failed on ${where}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}${reason ? ` Reason: ${reason}` : ""}`,
@@ -801,6 +1006,8 @@ export async function extractAfterActions(input: ExtractAfterActionsInput): Prom
 
 export interface AuthCheckReport {
   storage_state: "set" | "not_set";
+  /** Present when the storageState file is readable by other users. */
+  storage_state_warning?: string;
   requested_url: string;
   final_url: string;
   redirected: boolean;
@@ -820,8 +1027,11 @@ export async function checkAuth(url: string, waitFor: WaitFor): Promise<AuthChec
     } catch {
       path = finalUrl;
     }
+    const ss = process.env.QA_MCP_STORAGE_STATE;
+    const permissionProblem = ss ? storageStatePermissionProblem(ss) : null;
     return {
-      storage_state: process.env.QA_MCP_STORAGE_STATE ? "set" : "not_set",
+      storage_state: ss ? "set" : "not_set",
+      ...(permissionProblem ? { storage_state_warning: permissionProblem } : {}),
       requested_url: url,
       final_url: finalUrl,
       redirected: finalUrl.replace(/\/$/, "") !== url.replace(/\/$/, ""),

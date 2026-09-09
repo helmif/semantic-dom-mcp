@@ -8,7 +8,24 @@
  */
 import type { InPageOptions } from "./traverse.js";
 import {
+  __qaCellText,
+  __qaCollect,
+  __qaCountInteractive,
+  __qaDialogData,
+  __qaFields,
+  __qaHeaderDonor,
+  __qaOutline,
+  __qaRegionName,
+  __qaRegionSelector,
+  __qaRegionSelectorShort,
+  __qaRepeatedContainers,
+  __qaShapeSignature,
+  __qaTableData,
+  type OutlineOptions,
+} from "./traverse.js";
+import {
   __qaAccessibleName,
+  __qaAncestorFlags,
   __qaAriaBool,
   __qaBuildNode,
   __qaCandidates,
@@ -23,10 +40,12 @@ import {
   __qaFormGroup,
   __qaIsGeneratedId,
   __qaLabelText,
+  __qaNearbyLabelHint,
   __qaProperties,
   __qaRole,
   __qaScope,
   __qaScopeHint,
+  __qaScopeRoot,
   __qaScopeText,
   __qaShouldInclude,
   __qaTestAttr,
@@ -37,6 +56,8 @@ import {
 const IN_PAGE_FUNCTIONS: ReadonlyArray<(...args: never[]) => unknown> = [
   __qaCollapse,
   __qaAriaBool,
+  __qaAncestorFlags,
+  __qaNearbyLabelHint,
   __qaIdRefsText,
   __qaHasBox,
   __qaTextContent,
@@ -54,11 +75,26 @@ const IN_PAGE_FUNCTIONS: ReadonlyArray<(...args: never[]) => unknown> = [
   __qaVisibility,
   __qaProperties,
   __qaScopeText,
+  __qaScopeRoot,
   __qaScope,
   __qaCandidates,
   __qaScopeHint,
   __qaBuildNode,
   __qaExtract,
+  // outline engine
+  __qaRegionSelector,
+  __qaRegionSelectorShort,
+  __qaShapeSignature,
+  __qaRepeatedContainers,
+  __qaCollect,
+  __qaCountInteractive,
+  __qaRegionName,
+  __qaCellText,
+  __qaHeaderDonor,
+  __qaTableData,
+  __qaFields,
+  __qaDialogData,
+  __qaOutline,
 ];
 
 /** Strips a leading `export ` in case the runtime includes it in source text. */
@@ -83,6 +119,17 @@ export function buildInPageScript(): string {
 /** Builds the full evaluate expression for a given options object. */
 export function buildEvaluateExpression(opts: InPageOptions): string {
   return `(${buildInPageScript()})(${JSON.stringify(opts)})`;
+}
+
+let cachedOutlineScript: string | undefined;
+
+/** Same bundle, different entry point: `(opts) => RawOutline`. */
+export function buildOutlineExpression(opts: OutlineOptions): string {
+  if (!cachedOutlineScript) {
+    const body = IN_PAGE_FUNCTIONS.map(fnSource).join("\n");
+    cachedOutlineScript = `(function (opts) {\n${body}\nreturn __qaOutline(opts);\n})`;
+  }
+  return `(${cachedOutlineScript})(${JSON.stringify(opts)})`;
 }
 
 /**

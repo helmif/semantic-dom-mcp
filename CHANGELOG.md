@@ -11,6 +11,76 @@ matching section.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-08
+
+The token release. A Codex Desktop benchmark on a real admin page showed
+0.7.0's full extraction at 3.9x the size of the native accessibility tree
+and 55% of primary locators ambiguous on a table. 0.8 changes how an agent
+works with the server: map the page cheaply, extract one region, act with
+the snapshot in the same call, paste locators back verbatim, verify the
+written spec. Measured on three authenticated pages of a real seller
+dashboard (same pages, same session, same wait):
+
+| Page | Aria snapshot (native tree) | Outline (0.8) | Full extraction 0.7 → 0.8 |
+| --- | ---: | ---: | ---: |
+| Home | 11,699 ch | 541 ch | 45,807 → 26,922 ch |
+| Product detail | 13,904 ch | 2,133 ch | 47,448 → 33,931 ch |
+| Batch cart | 2,595 ch | 458 ch | 10,988 → 9,023 ch |
+
+The guest add-to-cart flow (outline → scoped listing → open product →
+add-to-cart with the diff in the same call → verify the spec's locators):
+**~3,800 est. tokens**, against ~18,300 in 0.6 and ~39,200 in 0.5, with all
+four spec locators verified unique.
+
+### Added
+
+- `extract_outline` and `session_extract({ mode: "outline" })`: the page as
+  a map. Landmark regions with a `selector` accepted by `scope`, structured
+  tables (headers, row identity, cells), open dialogs (label/value fields),
+  current alert text. A few hundred to a few thousand characters.
+- Scoped extraction: `scope` (CSS selector; resolves to the last visible
+  match so stacked dialogs work), `roles`, `visible_only`,
+  `max_output_chars` (deterministic document-order truncation reported in
+  `omitted`), `include_tables`. On every extraction tool and in sessions.
+- Locators scoped to the extraction root: inside `scope`, an ambiguous
+  locator becomes `locator('<scope>').getByRole(...)`, verified unique
+  within it (schema 1.5 adds `within.kind: "css"`).
+- `session_act({ then_extract })`: the diff, a scoped extraction or an
+  outline in the same call. One round trip per step.
+- Action locators accept the `playwright` expression string verbatim
+  (`locator: { playwright: "getByRole('row', { name: 'X' }).getByPlaceholder('0')" }`),
+  parsed by a strict grammar. No re-parsing on the agent side.
+- `verify_locators` and `session_verify_locators`: count every expression
+  from a written spec against the live page; matches, uniqueness, first
+  match, summary. The closed loop after the test is written, and a CI drift
+  check.
+- `get_conventions` for clients that do not surface MCP prompts.
+- Structured tables fold component-library split tables (header table +
+  body table) into one, skip layout/measure rows, and use `innerText` so
+  cells keep spaces ("Rp35.000 Rp45.000 22%").
+- Unlabeled framework controls carry a `context_note` with the text before
+  them, flagged as a hint.
+- Benchmark: raw arm uses the same storageState and wait as the MCP arm
+  (parity bug fixed), and a Playwright `ariaSnapshot()` arm stands in for
+  the native accessibility tree.
+- Startup diagnostic line on stderr (version, browser, config); Chromium
+  launch fails fast with an install hint; `check_auth` warns when the
+  storageState file is readable by other users.
+
+### Changed
+
+- Row and list-item identity is the cell unique among sibling rows (product
+  name, SKU), not the first short cell (a status badge shared by every
+  row). This is what made 55% of a table page's primaries ambiguous.
+- Structural `nth-child` CSS paths never go on the wire (they were 500+
+  characters per ambiguous node on real SPAs); they stay internal for
+  `.nth()` correlation.
+- `@modelcontextprotocol/sdk` 1.30; `npm audit --omit=dev` is clean and a
+  release gate.
+- README no longer claims universal token savings. The claim is: verified
+  locators, structured assertion data, observed behavior, and a first look
+  at a page that is smaller than the native accessibility tree.
+
 ## [0.7.0] - 2026-09-08
 
 Scoped locators, from the first authenticated run against a real seller
@@ -259,7 +329,8 @@ Initial public release on npm.
 - Parallel locator verification, bounded concurrency, document order kept.
 - Release workflow: pushing a `v*` tag publishes to npm.
 
-[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/helmif/semantic-dom-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/helmif/semantic-dom-mcp/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/helmif/semantic-dom-mcp/compare/v0.5.1...v0.6.0

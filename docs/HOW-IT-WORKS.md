@@ -314,6 +314,35 @@ reports `value` (never for password fields), `aria_expanded`, `aria_selected`, `
 messages live), `validation_message` (constraint validation, only when the field is invalid) and
 `options` for `<select>`. Absent state is `null`, never `false`.
 
+## 8c. Outline first, then one region (v0.8)
+
+A full extraction of a real page costs 2–3x the native accessibility tree, because every node
+carries an executable locator, a uniqueness verdict and state. The native tree is the wrong
+comparison for writing a test, but the right one for a first look. So v0.8 gives the agent a
+first look that is cheaper than that tree: the **outline**. The in-page engine walks landmarks
+(`header`, `nav`, `main`, forms, tables, lists, dialogs, ARIA regions), names them, counts their
+interactive descendants, and computes the shortest selector that identifies each one on the page
+(`main table`, `#headerbar`, `[data-testid=…]`). Tables become headers plus rows, each row with
+an **identity**, the cell unique among its siblings (the product name, not the status badge every
+row shares), and its cells keyed by header; component-library split tables (a header-only table
+followed by a body-only one) are folded into one and layout rows dropped. Open dialogs become
+label/value fields. Measured on three authenticated pages the outline was 82–95% smaller than
+Playwright's `ariaSnapshot()` of the same page.
+
+The agent then extracts **one region**: `scope` (a selector, resolving to the last visible match
+so stacked dialogs work), `roles`, `visible_only`, and a `max_output_chars` budget that drops
+nodes in document order and says how many in `omitted`. Inside a scope the engine also emits
+locators scoped to the scope root (`locator('[role=dialog]').getByRole('button', { name })`),
+verified unique within it; row identity feeds `getByRole('row', { name })`. With
+`session_act({ then_extract })` a step is one round trip: actions, observed behavior, and the
+scoped diff in one response.
+
+Two closing pieces. Every `playwright` expression the server emits is accepted back as an action
+locator and parsed by a strict grammar (scoped forms and `.nth()` included), so nothing is
+re-parsed on the agent side. And `verify_locators` counts the expressions of a *written* spec
+against the live page, which turns the review rule "every locator must exist" into a tool and
+doubles as a CI drift check.
+
 ## 9. The consistency layer — conventions as a served artifact
 
 The second half of the goal has nothing to do with parsing. The server ships the team's

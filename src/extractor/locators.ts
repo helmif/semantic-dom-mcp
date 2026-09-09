@@ -31,6 +31,8 @@ function scopeExpression(s: NonNullable<RawLocatorCandidate["within"]>): string 
       return `getByRole('listitem').filter({ hasText: ${q(s.value)} })`;
     case "test-id":
       return `getByTestId(${q(s.value)})`;
+    case "css":
+      return `locator(${q(s.value)})`;
   }
 }
 
@@ -42,6 +44,8 @@ function scopePwLocator(frame: Frame, s: NonNullable<RawLocatorCandidate["within
       return frame.getByRole("listitem").filter({ hasText: s.value });
     case "test-id":
       return frame.getByTestId(s.value);
+    case "css":
+      return frame.locator(s.value);
   }
 }
 

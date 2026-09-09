@@ -63,7 +63,7 @@ const locatorSchema = z
     playwright: z.string().min(1),
     is_unique: z.boolean(),
     disambiguation: z.string().optional(),
-    within: z.object({ kind: z.enum(["row", "listitem", "test-id"]), value: z.string().min(1) }).strict().optional(),
+    within: z.object({ kind: z.enum(["row", "listitem", "test-id", "css"]), value: z.string().min(1) }).strict().optional(),
   })
   .strict();
 
@@ -128,7 +128,7 @@ const nodeSchema = z
 
 export const semanticExtractSchema = z
   .object({
-    schema_version: z.literal("1.4"),
+    schema_version: z.literal("1.5"),
     page_metadata: z
       .object({
         title: z.string(),
@@ -143,12 +143,30 @@ export const semanticExtractSchema = z
     interactive_nodes: z.array(nodeSchema),
     observed: observedSchema.optional(),
     snapshot_id: z.number().int().positive().optional(),
+    tables: z
+      .array(
+        z
+          .object({
+            selector: z.string(),
+            name: z.string().nullable(),
+            headers: z.array(z.string()),
+            row_count: z.number().int().nonnegative(),
+            rows: z.array(z.object({ identity: z.string().nullable(), cells: z.record(z.string()) }).strict()),
+            truncated: z.boolean(),
+          })
+          .strict(),
+      )
+      .optional(),
+    dialogs: z
+      .array(z.object({ selector: z.string(), name: z.string().nullable(), is_visible: z.boolean(), text: z.string(), fields: z.record(z.string()) }).strict())
+      .optional(),
+    omitted: z.object({ nodes: z.number().int().positive(), reason: z.string() }).strict().optional(),
   })
   .strict();
 
 export const semanticDiffSchema = z
   .object({
-    schema_version: z.literal("1.4"),
+    schema_version: z.literal("1.5"),
     kind: z.literal("diff"),
     from_snapshot: z.number().int().positive(),
     to_snapshot: z.number().int().positive(),

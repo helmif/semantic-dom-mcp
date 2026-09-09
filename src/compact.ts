@@ -36,7 +36,12 @@ export function compactNode(node: InteractiveNode): Json {
   if (node.properties.text_content !== null && node.properties.text_content === node.accessible_name) delete props["text_content"];
 
   const keepFallbacks = !node.primary_locator.is_unique || BRITTLE.has(node.primary_locator.strategy);
-  const fallbacks = keepFallbacks ? node.fallback_locators.slice(0, MAX_WIRE_FALLBACKS) : [];
+  // A structural nth-child path is never a locator a test should copy; on a
+  // real SPA it is 600+ characters per node. It stays internal (.nth
+  // correlation) and leaves the wire.
+  const fallbacks = keepFallbacks
+    ? node.fallback_locators.filter((l) => !(l.strategy === "css" && l.playwright.includes("nth-child("))).slice(0, MAX_WIRE_FALLBACKS)
+    : [];
 
   const out: Json = dropNulls({
     kind: node.kind === "element" ? null : node.kind,
@@ -71,8 +76,11 @@ function isDiff(v: unknown): v is SemanticDiff {
   return !!v && typeof v === "object" && (v as SemanticDiff).kind === "diff";
 }
 
-/** Applies the wire rules to an extract or a diff; any other value passes through untouched. */
+/** Applies the wire rules to an extract or a diff, including one nested under `extract` (act reports); anything else passes through untouched. */
 export function compactForWire<T>(value: T): T | Json {
+  if (value && typeof value === "object" && "extract" in (value as Json) && (value as Json).extract && typeof (value as Json).extract === "object") {
+    return { ...(value as Json), extract: compactForWire((value as Json).extract) };
+  }
   if (isExtract(value)) {
     return { ...value, interactive_nodes: value.interactive_nodes.map(compactNode) };
   }

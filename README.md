@@ -1,17 +1,21 @@
 # semantic-dom-mcp
 
 Local MCP server (stdio, Node.js + TypeScript) that drives a real Chromium browser via Playwright
-to extract a live page, or a whole multi-step flow, into compact, factual **Semantic JSON** with
-**Playwright-native locators**, the **behavior the page showed** (navigations, requests, console
-errors), and **diffs between steps**. AI-generated Playwright tests come out consistent across the
-whole QA team, not just accurate.
+and gives a coding agent what it needs to write a Playwright test it did not have to guess:
+**verified locators** (counted by Playwright's own engine, scoped the way a QA engineer scopes
+them), **structured assertion data** (tables as rows and cells, dialogs as label/value pairs),
+the **behavior the page showed** (navigations, requests, console errors), and **diffs between
+steps** of a flow. Same page → same output → same conventions → same test style across the team.
 
-Same page → same extraction → same conventions → same test style, regardless of who runs it.
-
-**Evidence:** [benchmark/RESULTS.md](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/RESULTS.md). On real pages the Semantic JSON is
-**92–97% smaller** than the raw DOM an agent would otherwise consume, every locator is
-uniqueness-verified by Playwright's engine, and output is byte-identical across runs. A session
-diff is a further **~90% smaller** than re-extracting the page after a step.
+**How it keeps tokens low.** An agent starts with an *outline* of the page (regions, tables,
+dialogs, alerts; a few hundred to a few thousand characters, smaller than the native
+accessibility tree), then extracts one region, and acts with the snapshot in the same call.
+Measured on a real seller dashboard, the outline was 82–95% smaller than Playwright's aria
+snapshot of the same page, and a whole authenticated add-to-cart flow ran in about 10k tokens.
+A full-page extraction is still 2–3x the size of the aria snapshot, because it carries what
+that tree does not: executable locators, uniqueness verdicts and state. Ask for the whole
+page only when you need it. Numbers: [benchmark/RESULTS.md](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/RESULTS.md),
+[FLOW-VALIDATION.md](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/FLOW-VALIDATION.md).
 **Docs:** [How it works (deep dive)](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/HOW-IT-WORKS.md) · [Team guide (setup + connecting your agent)](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/GUIDE.md) · [Benchmark methodology](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/README.md) · [v0.5 flow validation](https://github.com/helmif/semantic-dom-mcp/blob/main/benchmark/FLOW-VALIDATION.md) · [Roadmap](https://github.com/helmif/semantic-dom-mcp/blob/main/docs/ROADMAP.md) · [Changelog](https://github.com/helmif/semantic-dom-mcp/blob/main/CHANGELOG.md)
 
 ## Quickstart
@@ -56,29 +60,35 @@ troubleshooting. To run from a clone instead (contributors), see Development bel
    team conventions.
 3. The result is a Playwright test in team style, grounded in real locators, never guessed ones.
 
-**Multi-step flow (v0.5).** Ask: *"write a test for login → add to cart → checkout."*
+**Multi-step flow (v0.8 way).** Ask: *"write a test for login → add to cart → checkout."*
 
-1. **`session_open({ url })`** opens a persistent page. The session survives across calls.
-2. **`session_act({ session_id, actions })`** runs declared actions and returns what the page
-   did: `observed.navigations` (redirect targets), `observed.requests` (method, path, status),
-   console errors, dialogs, popups. These feed `waitForURL` and `waitForResponse` in the test.
-3. **`session_extract({ session_id, diff_against: "previous" })`** returns only what changed
-   since the last snapshot: added nodes (the toast, the dialog), removed nodes, changed state
-   (`value`, `is_disabled`, `aria_invalid`, `described_by`). That is the assertion list for the step.
-4. Repeat 2 and 3 per step, then **`session_close`**.
+1. **`session_open({ url })`** opens a persistent page, then **`session_extract({ mode: "outline" })`**
+   maps it: regions with a `selector`, tables with row identity and cells, dialogs, alerts.
+2. **`session_extract({ scope, roles, visible_only })`** pulls only the region the step needs, with
+   locators verified unique inside it.
+3. **`session_act({ actions, then_extract: { mode: "diff", scope } })`** runs declared actions
+   (paste any returned `playwright` expression as the locator) and returns, in the same call, what
+   the page did (`observed`: redirects, requests, console errors) and what changed (added nodes,
+   removed nodes, state transitions). That is the wait list and the assertion list for the step.
+4. Repeat per step, then **`session_verify_locators`** with the expressions in the written spec,
+   then **`session_close`**.
 
-Every fact a test needs (locator, redirect, API path, state transition) comes from the page, not
-from the agent's memory.
+Every fact a test needs (locator, redirect, API path, state transition, cell value) comes from
+the page, not from the agent's memory.
 
 ## MCP surface
 
 | Kind | Name | Purpose |
 | --- | --- | --- |
-| Tool | `extract_semantic_dom` | Extract a URL into Semantic JSON (`url`, `wait_for` default `auto` = load then settled, `wait_selector`, `include_hidden`, `max_nodes`, `viewport`, `include_click_targets`). Read-only, never touches the page. |
+| Tool | `extract_outline` | The page as a map: regions (each with a `selector` for `scope`), structured tables, open dialogs, alerts. Start here. |
+| Tool | `extract_semantic_dom` | Extract a URL into Semantic JSON (`url`, `wait_for` default `auto`, `wait_selector`, `scope`, `roles`, `visible_only`, `max_output_chars`, `include_tables`, `include_hidden`, `max_nodes`, `viewport`, `include_click_targets`). Read-only, never touches the page. |
+| Tool | `verify_locators` | Count every Playwright expression from a written spec against the live page; matches, uniqueness, first match, summary. |
+| Tool | `get_conventions` | The team conventions as text, for clients that hide MCP prompts. |
 | Tool | `extract_semantic_dom_after` | Same, but first runs a short **declared** action list (fill/click/press/select/goto/wait, max 20) in the main frame and snapshots the resulting state, plus an `observed` block of what the page did meanwhile. Refuses to extract if the actions navigated off the allowlist. |
 | Tool | `session_open` | Open a persistent page for a multi-step flow (`url`, `wait_for`, `wait_selector`, `viewport`). Returns a `session_id`. Sessions are capped and expire when idle. |
-| Tool | `session_act` | Run declared actions in an open session (action locators accept the extraction's `within`). Returns the resulting URL/title and `observed`: main-frame navigations, xhr/fetch requests (method, path, status), console errors, dialogs (dismissed), popups (closed). |
-| Tool | `session_extract` | Snapshot the session's current state (`snapshot_id` included). With `diff_against` (a snapshot id or `"previous"`) returns a **diff**: added, removed, changed nodes and the behavior observed in between. |
+| Tool | `session_act` | Run declared actions in an open session; `then_extract` returns the diff, a scoped extraction or an outline in the same call. Action locators take a returned `playwright` expression verbatim. Returns the resulting URL/title and `observed`: main-frame navigations, xhr/fetch requests (method, path, status), console errors, dialogs (dismissed), popups (closed). |
+| Tool | `session_extract` | Snapshot the session's current state (`snapshot_id` included), or `mode: "outline"`. Takes `scope`/`roles`/`visible_only`/`max_output_chars`/`include_tables`. With `diff_against` (a snapshot id or `"previous"`) returns a **diff**: added, removed, changed nodes and the behavior observed in between. |
+| Tool | `session_verify_locators` | `verify_locators` against the session's current page. |
 | Tool | `session_close` | Release the session's browser context. |
 | Tool | `session_list` | Diagnostic: open sessions with URL, expiry and counts. |
 | Tool | `check_auth` | Diagnostic: navigates with the configured storageState and reports whether the session bounced to a login-looking page (expired auth shows up as an answer, not a mystery). |
